@@ -92,10 +92,9 @@ constexpr double kDefaultRadarLon = 4.9041;
 
 /** Poll adsb.fi (API public limit: 1 req/s). */
 constexpr unsigned long kAdsbFetchIntervalMs = 5000;
-/** Redraw cadence; aircraft are dead-reckoned along their track/speed so motion
- *  is smooth. ~4 Hz = 250 ms (panel scanout caps at ~24 Hz; the full-frame
- *  recompose+present is the practical limit ~10-15 Hz). */
-constexpr unsigned long kRadarRedrawIntervalMs = 250;
+/** Redraw cadence. Slow updates avoid continuous visual motion/flicker; aircraft
+ *  positions jump between updates instead of being smoothly dead-reckoned. */
+constexpr unsigned long kRadarRedrawIntervalMs = 2000;
 /** Legacy scale unused — fetch uses radar::fetchRadiusKm() to screen edge. */
 constexpr float kAdsbFetchRadiusScale = 1.0f;
 /** false = hide aircraft with alt_baro "ground"; true = show them too. */

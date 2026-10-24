@@ -50,8 +50,8 @@ void handleBootButton() {
 }
 
 // ADS-B fetch runs on its own task: the HTTPS request blocks for ~1-2 s, and
-// keeping it off the main loop lets the radar keep redrawing (dead-reckoned) at
-// 4 Hz throughout. The task publishes into the shared aircraft buffer under a
+// keeping it off the main loop lets the radar refresh independently. The task
+// publishes into the shared aircraft buffer under a
 // lock; the render loop reads a snapshot.
 void adsbFetchTask(void*) {
   for (;;) {
@@ -118,8 +118,8 @@ void loop() {
     if (!g_radar_visible) {
       showRadarIfConnected();
     } else if (millis() - g_last_redraw_ms >= config::kRadarRedrawIntervalMs) {
-      // Redraw at 4 Hz with dead-reckoned positions; the ADS-B fetch runs on
-      // its own task (adsbFetchTask).
+      // Refresh slowly to avoid continuous motion; ADS-B fetch runs on its own
+      // task (adsbFetchTask).
       g_last_redraw_ms = millis();
       ui::radarDisplayRefreshAircraft();
     }
