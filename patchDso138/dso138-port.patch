@@ -1,0 +1,267 @@
+diff --git a/README.md b/README.md
+index 0318b3f..441ce60 100644
+--- a/README.md
++++ b/README.md
+@@ -22,6 +22,36 @@ After Wi‑Fi is saved, the device reconnects automatically; the radar runs in t
+ 
+ During setup you can also hold BOOT at power-on to force a credential reset (same as the long press).
+ 
++## DSO138 LCD variant (ESP32-WROOM-32 + ILI9341 320x240)
++
++This fork adds a second build target, `dso138`, for an ESP32-WROOM-32 dev board driving a JYE Tech DSO138 LCD module (ILI9341, 8-bit parallel). The original ESP32-C3 + GC9A01 target is unchanged.
++
++Status: **not yet tested on hardware.**
++
++```
++pio run -e dso138 -t upload
++pio device monitor
++```
++
++- Selected by `-DPLANE_RADAR_DSO138=1` (set in the `dso138` env). Pins and panel settings are in `include/config.h`; the LovyanGFX device is in `include/hardware/lgfx_config.hpp`.
++- The radar stays a 240x240 circle, centered on the 320x240 screen with a 40 px band either side (`kRadarOriginX`).
++- BOOT button is GPIO 0 (range tap / 3 s hold to reset Wi-Fi).
++- Backlight is not software-controlled: wire P16 to 3V3 through a resistor.
++
++| Module pin | Signal | ESP32 |
++|---|---|---|
++| P7 | nCS | GPIO27 |
++| P8 | RS (DC) | GPIO14 |
++| P9 | nWR | GPIO25 |
++| P10 | nRD | GPIO13 |
++| P31 | nRESET | GPIO26 |
++| P23-P30 | DB0-DB7 | GPIO16, 4, 23, 22, 21, 19, 18, 17 |
++| P5, P17-P21, P34 | GND | GND |
++| P6, P11, P32, P33 | 3.3 V | 3V3 |
++
++If the image is upside down, set `kDisplayRotation` to 3. If colors are swapped or inverted, flip `kDisplayRgbOrder` / `kDisplayInvert`.
++The merged-image script and CI workflows are C3-specific and do not apply to this target.
++
+ ## Wi‑Fi setup portal
+ 
+ **First-time setup** (no saved Wi‑Fi):
+diff --git a/include/config.h b/include/config.h
+index d084875..dc63658 100644
+--- a/include/config.h
++++ b/include/config.h
+@@ -23,12 +23,45 @@ constexpr unsigned long kWifiDownGraceMs = 4000;
+ /** Minimum interval between background reconnect tries. */
+ constexpr unsigned long kWifiReconnectIntervalMs = 15000;
+ 
+-// --- BOOT button (ESP32-C3 Super Mini, active LOW) ---
++// --- BOOT button (active LOW) ---
++#if defined(PLANE_RADAR_DSO138)
++// ESP32-WROOM-32 dev board: BOOT button is GPIO 0.
++constexpr gpio_num_t kBootPin = GPIO_NUM_0;
++#else
++// ESP32-C3 Super Mini: BOOT button is GPIO 9.
+ constexpr gpio_num_t kBootPin = GPIO_NUM_9;
++#endif
+ constexpr unsigned long kBootResetHoldMs = 3000UL;
+ /** Ignore BOOT taps shorter than this (debounce). */
+ constexpr unsigned long kBootTapMinMs = 40UL;
+ 
++#if defined(PLANE_RADAR_DSO138)
++// --- Display: JYE Tech DSO138 LCD module, ILI9341 320x240, 8-bit parallel ---
++// Wiring matches the DSO138 demo project (module header pin in comment).
++constexpr int kDisplayPinCs = 27;   // P7  nCS
++constexpr int kDisplayPinDc = 14;   // P8  RS
++constexpr int kDisplayPinWr = 25;   // P9  nWR
++constexpr int kDisplayPinRd = 13;   // P10 nRD
++constexpr int kDisplayPinRst = 26;  // P31 nRESET
++constexpr int kDisplayPinD0 = 16;   // P23 DB0
++constexpr int kDisplayPinD1 = 4;    // P24 DB1
++constexpr int kDisplayPinD2 = 23;   // P25 DB2
++constexpr int kDisplayPinD3 = 22;   // P26 DB3
++constexpr int kDisplayPinD4 = 21;   // P27 DB4
++constexpr int kDisplayPinD5 = 19;   // P28 DB5
++constexpr int kDisplayPinD6 = 18;   // P29 DB6
++constexpr int kDisplayPinD7 = 17;   // P30 DB7
++
++constexpr int kDisplayWidth = 320;
++constexpr int kDisplayHeight = 240;
++/** LovyanGFX rotation for landscape 320x240. Try 3 if the image is upside down. */
++constexpr int kDisplayRotation = 1;
++
++constexpr uint32_t kDisplayBusWriteHz = 20000000;
++// If colors look swapped or inverted on your module, flip these.
++constexpr bool kDisplayInvert = false;
++constexpr bool kDisplayRgbOrder = false;
++#else
+ // --- Display: GC9A01 1.28" round 240×240 (SPI) ---
+ constexpr gpio_num_t kDisplayPinRst = GPIO_NUM_0;
+ constexpr gpio_num_t kDisplayPinCs = GPIO_NUM_1;
+@@ -38,11 +71,20 @@ constexpr gpio_num_t kDisplayPinSclk = GPIO_NUM_4;  // display SCL
+ 
+ constexpr int kDisplayWidth = 240;
+ constexpr int kDisplayHeight = 240;
++constexpr int kDisplayRotation = 0;
+ 
+ constexpr uint32_t kDisplaySpiWriteHz = 40000000;
+ // GC9A01 modules often need invert + BGR for correct black/green output
+ constexpr bool kDisplayInvert = true;
+ constexpr bool kDisplayRgbOrder = true;
++#endif
++
++/** The radar is drawn into a square 240x240 frame; this is where it lands on the
++ *  panel. On the 240x240 round display it fills the screen; on 320x240 it is
++ *  centered, leaving a 40 px band on each side. */
++constexpr int kRadarFrameSize = 240;
++constexpr int kRadarOriginX = (kDisplayWidth - kRadarFrameSize) / 2;
++constexpr int kRadarOriginY = (kDisplayHeight - kRadarFrameSize) / 2;
+ 
+ // --- Radar center defaults (overridden via WiFi setup portal) ---
+ constexpr double kDefaultRadarLat = 52.3676;
+diff --git a/include/hardware/lgfx_config.hpp b/include/hardware/lgfx_config.hpp
+index 4f1484b..5ca0a73 100644
+--- a/include/hardware/lgfx_config.hpp
++++ b/include/hardware/lgfx_config.hpp
+@@ -5,6 +5,54 @@
+ 
+ #include "config.h"
+ 
++#if defined(PLANE_RADAR_DSO138)
++
++/** LovyanGFX device: ILI9341 (DSO138 LCD module) on an 8-bit parallel bus. */
++class LGFX : public lgfx::LGFX_Device {
++  lgfx::Bus_Parallel8 _bus;
++  lgfx::Panel_ILI9341 _panel;
++
++public:
++  LGFX() {
++    {
++      auto cfg = _bus.config();
++      cfg.i2s_port = I2S_NUM_0;
++      cfg.freq_write = config::kDisplayBusWriteHz;
++      cfg.pin_wr = config::kDisplayPinWr;
++      cfg.pin_rd = config::kDisplayPinRd;
++      cfg.pin_rs = config::kDisplayPinDc;  // RS = D/C
++      cfg.pin_d0 = config::kDisplayPinD0;
++      cfg.pin_d1 = config::kDisplayPinD1;
++      cfg.pin_d2 = config::kDisplayPinD2;
++      cfg.pin_d3 = config::kDisplayPinD3;
++      cfg.pin_d4 = config::kDisplayPinD4;
++      cfg.pin_d5 = config::kDisplayPinD5;
++      cfg.pin_d6 = config::kDisplayPinD6;
++      cfg.pin_d7 = config::kDisplayPinD7;
++      _bus.config(cfg);
++      _panel.setBus(&_bus);
++    }
++    {
++      auto cfg = _panel.config();
++      cfg.pin_cs = config::kDisplayPinCs;
++      cfg.pin_rst = config::kDisplayPinRst;
++      cfg.pin_busy = -1;
++      cfg.panel_width = 240;   // native portrait size; rotation makes it 320x240
++      cfg.panel_height = 320;
++      cfg.offset_x = 0;
++      cfg.offset_y = 0;
++      cfg.readable = false;    // radar never reads pixels back
++      cfg.bus_shared = false;
++      cfg.invert = config::kDisplayInvert;
++      cfg.rgb_order = config::kDisplayRgbOrder;
++      _panel.config(cfg);
++    }
++    setPanel(&_panel);
++  }
++};
++
++#else
++
+ /** LovyanGFX device: GC9A01 on SPI. Pin values come from config.h. */
+ class LGFX : public lgfx::LGFX_Device {
+   lgfx::Bus_SPI _bus;
+@@ -34,3 +82,5 @@ public:
+     setPanel(&_panel);
+   }
+ };
++
++#endif
+diff --git a/platformio.ini b/platformio.ini
+index c81ce53..0beee8f 100644
+--- a/platformio.ini
++++ b/platformio.ini
+@@ -24,3 +24,27 @@ lib_deps =
+   lovyan03/LovyanGFX@^1.2.7
+   tzapu/WiFiManager@^2.0.17
+   bblanchon/ArduinoJson@^7.4.2
++
++
++; ESP32-WROOM-32 dev board + JYE Tech DSO138 LCD module (ILI9341, 320x240, 8-bit parallel)
++; Pins and panel settings are in include/config.h under PLANE_RADAR_DSO138.
++; Build/upload:  pio run -e dso138 -t upload
++; (The merged-image script and CI are C3-specific, so they are not used here.)
++[env:dso138]
++platform = espressif32@6.5.0
++board = esp32dev
++framework = arduino
++monitor_speed = 115200
++board_build.partitions = partitions/plane_radar.csv
++board_build.embed_files = data/ui_font.vlw
++
++build_flags =
++  -std=gnu++17
++  -DWM_NODEBUG
++  -DWM_MDNS
++  -DPLANE_RADAR_DSO138=1
++
++lib_deps =
++  lovyan03/LovyanGFX@^1.2.7
++  tzapu/WiFiManager@^2.0.17
++  bblanchon/ArduinoJson@^7.4.2
+diff --git a/src/hardware/display.cpp b/src/hardware/display.cpp
+index 42f8252..d3492d7 100644
+--- a/src/hardware/display.cpp
++++ b/src/hardware/display.cpp
+@@ -6,7 +6,7 @@ LGFX tft;
+ 
+ void displayInit() {
+   tft.init();
+-  tft.setRotation(0);
++  tft.setRotation(config::kDisplayRotation);
+   tft.setBrightness(255);
+   tft.setTextWrap(false);
+   displayFontInit();
+diff --git a/src/ui/radar_display.cpp b/src/ui/radar_display.cpp
+index 5dcc576..2c4f1e5 100644
+--- a/src/ui/radar_display.cpp
++++ b/src/ui/radar_display.cpp
+@@ -714,15 +714,38 @@ void renderFrame() {
+     const DrawScope scope(s_frame);
+     drawAircraft();
+   }
+-  s_frame.pushSprite(0, 0);
++  s_frame.pushSprite(config::kRadarOriginX, config::kRadarOriginY);
+   tft.setTextDatum(textdatum_t::top_left);
+ }
+ 
++// Paint whatever part of the panel the square radar frame does not cover (the
++// side bands on a 320x240 panel). No-op on the 240x240 round display.
++void clearPanelMargins() {
++  const int left = config::kRadarOriginX;
++  const int top = config::kRadarOriginY;
++  const int right = config::kRadarOriginX + config::kRadarFrameSize;
++  const int bottom = config::kRadarOriginY + config::kRadarFrameSize;
++  const uint16_t bg = radar::kColorBackground;
++  if (left > 0) {
++    tft.fillRect(0, 0, left, config::kDisplayHeight, bg);
++  }
++  if (right < config::kDisplayWidth) {
++    tft.fillRect(right, 0, config::kDisplayWidth - right, config::kDisplayHeight, bg);
++  }
++  if (top > 0) {
++    tft.fillRect(left, 0, config::kRadarFrameSize, top, bg);
++  }
++  if (bottom < config::kDisplayHeight) {
++    tft.fillRect(left, bottom, config::kRadarFrameSize, config::kDisplayHeight - bottom, bg);
++  }
++}
++
+ }  // namespace
+ 
+ void radarDisplayDraw() {
+   initPalette();
+   initLabelMetrics();
++  clearPanelMargins();
+ 
+   if (ensureFrameSprite()) {
+     renderFrame();
