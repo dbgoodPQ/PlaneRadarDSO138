@@ -24,64 +24,52 @@ constexpr unsigned long kWifiDownGraceMs = 4000;
 constexpr unsigned long kWifiReconnectIntervalMs = 15000;
 
 // --- BOOT button (active LOW) ---
-#if defined(PLANE_RADAR_DSO138)
-// ESP32-WROOM-32 dev board: BOOT button is GPIO 0.
+// CYD: the BOOT button is GPIO 0 (removed with on-device Settings in phase 5).
 constexpr gpio_num_t kBootPin = GPIO_NUM_0;
-#else
-// ESP32-C3 Super Mini: BOOT button is GPIO 9.
-constexpr gpio_num_t kBootPin = GPIO_NUM_9;
-#endif
 constexpr unsigned long kBootResetHoldMs = 3000UL;
 /** Ignore BOOT taps shorter than this (debounce). */
 constexpr unsigned long kBootTapMinMs = 40UL;
 
-#if defined(PLANE_RADAR_DSO138)
-// --- Display: JYE Tech DSO138 LCD module, ILI9341 320x240, 8-bit parallel ---
-// Wiring matches the DSO138 demo project (module header pin in comment).
-constexpr int kDisplayPinCs = 27;   // P7  nCS
-constexpr int kDisplayPinDc = 14;   // P8  RS
-constexpr int kDisplayPinWr = 25;   // P9  nWR
-constexpr int kDisplayPinRd = 13;   // P10 nRD
-constexpr int kDisplayPinRst = 26;  // P31 nRESET
-constexpr int kDisplayPinD0 = 16;   // P23 DB0
-constexpr int kDisplayPinD1 = 4;    // P24 DB1
-constexpr int kDisplayPinD2 = 23;   // P25 DB2
-constexpr int kDisplayPinD3 = 22;   // P26 DB3
-constexpr int kDisplayPinD4 = 21;   // P27 DB4
-constexpr int kDisplayPinD5 = 19;   // P28 DB5
-constexpr int kDisplayPinD6 = 18;   // P29 DB6
-constexpr int kDisplayPinD7 = 17;   // P30 DB7
+// --- Display: ESP32-2432S028R (CYD), ILI9341 320x240 on HSPI ---
+constexpr int kDisplayPinSclk = 14;
+constexpr int kDisplayPinMosi = 13;
+constexpr int kDisplayPinMiso = 12;
+constexpr int kDisplayPinCs = 15;
+constexpr int kDisplayPinDc = 2;
+constexpr int kDisplayPinRst = -1;        // tied to EN on the CYD
+constexpr int kDisplayPinBacklight = 21;  // PWM, active HIGH
 
 constexpr int kDisplayWidth = 320;
 constexpr int kDisplayHeight = 240;
-/** LovyanGFX rotation for landscape 320x240. Try 3 if the image is upside down. */
+/** LovyanGFX rotation for landscape (USB connector on the right). Use 3 if the
+ *  image is upside down; touch follows the rotation automatically. */
 constexpr int kDisplayRotation = 1;
 
-constexpr uint32_t kDisplayBusWriteHz = 20000000;
-// If colors look swapped or inverted on your module, flip these.
+constexpr uint32_t kDisplaySpiWriteHz = 40000000;
+constexpr uint32_t kDisplaySpiReadHz = 16000000;
 constexpr bool kDisplayInvert = false;
 constexpr bool kDisplayRgbOrder = false;
-#else
-// --- Display: GC9A01 1.28" round 240×240 (SPI) ---
-constexpr gpio_num_t kDisplayPinRst = GPIO_NUM_0;
-constexpr gpio_num_t kDisplayPinCs = GPIO_NUM_1;
-constexpr gpio_num_t kDisplayPinDc = GPIO_NUM_10;
-constexpr gpio_num_t kDisplayPinMosi = GPIO_NUM_3;  // display SDA
-constexpr gpio_num_t kDisplayPinSclk = GPIO_NUM_4;  // display SCL
+constexpr uint8_t kDisplayBrightness = 255;  // fixed, 0-255
 
-constexpr int kDisplayWidth = 240;
-constexpr int kDisplayHeight = 240;
-constexpr int kDisplayRotation = 0;
+// --- Touch: XPT2046 on its own SPI bus (VSPI) ---
+constexpr int kTouchPinSclk = 25;
+constexpr int kTouchPinMosi = 32;
+constexpr int kTouchPinMiso = 39;
+constexpr int kTouchPinCs = 33;
+constexpr int kTouchPinIrq = 36;
+constexpr uint32_t kTouchSpiHz = 1000000;
+/** Hold a finger on the screen this long during power-up to redo calibration. */
+constexpr unsigned long kTouchRecalibrateHoldMs = 3000UL;
+/** Log every touch point to Serial (bring-up aid; turn off once verified). */
+constexpr bool kTouchDebugLog = true;
 
-constexpr uint32_t kDisplaySpiWriteHz = 40000000;
-// GC9A01 modules often need invert + BGR for correct black/green output
-constexpr bool kDisplayInvert = true;
-constexpr bool kDisplayRgbOrder = true;
-#endif
+// --- On-board RGB LED (active LOW) — kept off ---
+constexpr int kLedPinRed = 4;
+constexpr int kLedPinGreen = 16;
+constexpr int kLedPinBlue = 17;
 
-/** The radar is drawn into a square 240x240 frame; this is where it lands on the
- *  panel. On the 240x240 round display it fills the screen; on 320x240 it is
- *  centered, leaving a 40 px band on each side. */
+/** Legacy sprite radar: a square 240x240 frame centered on the 320x240 panel.
+ *  Temporary until the LVGL radar (phase 3) moves it into the left 2/3. */
 constexpr int kRadarFrameSize = 240;
 constexpr int kRadarOriginX = (kDisplayWidth - kRadarFrameSize) / 2;
 constexpr int kRadarOriginY = (kDisplayHeight - kRadarFrameSize) / 2;

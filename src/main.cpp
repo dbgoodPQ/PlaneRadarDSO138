@@ -1,5 +1,5 @@
 /**
- * Plane Radar — WiFi setup, then radar UI on the round GC9A01 display.
+ * Plane Radar — WiFi setup, then radar UI on the CYD (ESP32-2432S028R).
  */
 
 #include <Arduino.h>
@@ -7,6 +7,7 @@
 
 #include "config.h"
 #include "hardware/display.h"
+#include "hardware/touch.h"
 #include "services/adsb_client.h"
 #include "services/radar_location.h"
 #include "services/wifi_setup.h"
@@ -42,6 +43,23 @@ void onRangeTap() {
   }
 }
 
+/** Bring-up aid: log touches and mark them with a dot (erased by the next
+ *  radar refresh). Disabled with config::kTouchDebugLog. */
+void debugTouch() {
+  if (!config::kTouchDebugLog) {
+    return;
+  }
+  static unsigned long last_log_ms = 0;
+  int16_t x;
+  int16_t y;
+  if (!hardware::touch::read(&x, &y) || millis() - last_log_ms < 100) {
+    return;
+  }
+  last_log_ms = millis();
+  Serial.printf("Touch: %d,%d\n", x, y);
+  tft.fillCircle(x, y, 3, TFT_RED);
+}
+
 void handleBootButton() {
   bootButtonPollLongPress();
   if (bootButtonConsumeTap()) {
@@ -74,6 +92,7 @@ void setup() {
 
   bootButtonInit();
   displayInit();
+  hardware::touch::init();
   if (wifiShowsSetupScreenOnBoot()) {
     statusScreenPortal();
   }
@@ -92,6 +111,7 @@ void setup() {
 
 void loop() {
   handleBootButton();
+  debugTouch();
   wifiLoop();
 
   if (WiFi.status() != WL_CONNECTED) {
