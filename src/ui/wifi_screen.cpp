@@ -374,7 +374,9 @@ void buildEntry(bool is_name) {
   const int32_t kb_y = field_y + kFieldH + kPad;
   s_keyboard = lv_keyboard_create(s_screen);
   lv_obj_set_size(s_keyboard, kScreenW, kScreenH - kb_y);
-  lv_obj_set_pos(s_keyboard, 0, kb_y);
+  // The keyboard is created with LV_ALIGN_BOTTOM_MID; keep that anchor (a
+  // set_pos would be taken as an offset from the bottom, pushing it off-screen).
+  lv_obj_align(s_keyboard, LV_ALIGN_BOTTOM_MID, 0, 0);
   lv_keyboard_set_textarea(s_keyboard, s_field);
   lv_keyboard_set_popovers(s_keyboard, true);  // enlarged key while pressed
   lv_obj_add_event_cb(s_keyboard, onJoin, LV_EVENT_READY, nullptr);  // check key
