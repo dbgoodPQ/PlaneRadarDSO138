@@ -6,27 +6,22 @@
 
 namespace config {
 
-// --- Wi-Fi portal ---
-constexpr char kPortalApName[] = "PlaneRadar-Setup";
-constexpr char kPortalIp[] = "192.168.4.1";
-/** mDNS host (no ".local" suffix); browser: http://plane-radar.local */
-constexpr char kPortalHostname[] = "plane-radar";
-constexpr char kPortalHostUrl[] = "plane-radar.local";
-
-/** Per-attempt STA connect wait (ms); retried kWifiConnectAttempts times. */
-constexpr unsigned long kWifiConnectAttemptMs = 15000;
-constexpr uint8_t kWifiConnectAttempts = 3;
-constexpr unsigned long kWifiPortalTimeoutSec = 0;  // 0 = no timeout while configuring
-constexpr unsigned long kWifiConnectingFrameMs = 50;
-/** Wait after disconnect before reconnecting (avoids portal on brief drops). */
-constexpr unsigned long kWifiDownGraceMs = 4000;
-/** Minimum interval between background reconnect tries. */
+// --- Wi-Fi ---
+/** Give up on a connection attempt after this long. */
+constexpr unsigned long kWifiConnectTimeoutMs = 15000;
+/** After losing a saved network, retry it at this interval (background). */
 constexpr unsigned long kWifiReconnectIntervalMs = 15000;
+/** Most networks listed on the Wi-Fi screen (strongest first). */
+constexpr int kWifiMaxListedNetworks = 15;
+
+// --- Settings access (until the gear button exists) ---
+/** Hold a finger on the radar this long to open Wi-Fi settings. */
+constexpr unsigned long kSettingsLongPressMs = 2000UL;
 
 // --- BOOT button (active LOW) ---
-// CYD: the BOOT button is GPIO 0 (removed with on-device Settings in phase 5).
+// CYD: GPIO 0. Tap = next range, hold = open Wi-Fi settings.
 constexpr gpio_num_t kBootPin = GPIO_NUM_0;
-constexpr unsigned long kBootResetHoldMs = 3000UL;
+constexpr unsigned long kBootHoldMs = 3000UL;
 /** Ignore BOOT taps shorter than this (debounce). */
 constexpr unsigned long kBootTapMinMs = 40UL;
 
@@ -60,8 +55,6 @@ constexpr int kTouchPinIrq = 36;
 constexpr uint32_t kTouchSpiHz = 1000000;
 /** Hold a finger on the screen this long during power-up to redo calibration. */
 constexpr unsigned long kTouchRecalibrateHoldMs = 3000UL;
-/** Log every touch point to Serial (bring-up aid; turn off once verified). */
-constexpr bool kTouchDebugLog = true;
 
 // --- On-board RGB LED (active LOW) — kept off ---
 constexpr int kLedPinRed = 4;
@@ -74,7 +67,7 @@ constexpr int kRadarFrameSize = 240;
 constexpr int kRadarOriginX = (kDisplayWidth - kRadarFrameSize) / 2;
 constexpr int kRadarOriginY = (kDisplayHeight - kRadarFrameSize) / 2;
 
-// --- Radar center defaults (overridden via WiFi setup portal) ---
+// --- Radar center defaults (until a location is saved) ---
 constexpr double kDefaultRadarLat = 52.3676;
 constexpr double kDefaultRadarLon = 4.9041;
 
@@ -87,11 +80,5 @@ constexpr unsigned long kRadarRedrawIntervalMs = 2000;
 constexpr float kAdsbFetchRadiusScale = 1.0f;
 /** false = hide aircraft with alt_baro "ground"; true = show them too. */
 constexpr bool kAdsbShowGroundAircraft = false;
-
-// --- UI colors (RGB565) — status screens ---
-constexpr uint16_t kColorBlack = 0x0000;
-constexpr uint16_t kColorYellow = 0xFFE0;
-constexpr uint16_t kTextOnYellow = kColorBlack;
-constexpr uint16_t kTextOnBlack = 0xFFFF;
 
 }  // namespace config

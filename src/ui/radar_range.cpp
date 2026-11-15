@@ -47,18 +47,6 @@ void saveShowRunways() {
   s_prefs.end();
 }
 
-bool portalCheckboxChecked(const char* value) {
-  if (value == nullptr || value[0] == '\0') {
-    return false;
-  }
-  // WiFiManager checkbox submits its value= attribute ("T", or "F" if we prefilled F).
-  if ((value[0] == 'T' || value[0] == 't' || value[0] == 'F' || value[0] == 'f') &&
-      value[1] == '\0') {
-    return true;
-  }
-  return strcmp(value, "on") == 0;
-}
-
 }  // namespace
 
 void rangeInit() {
@@ -93,14 +81,14 @@ bool useMiles() { return s_use_miles; }
 
 bool showRunways() { return s_show_runways; }
 
-void saveMilesFromPortal(const char* checkbox_value) {
-  s_use_miles = portalCheckboxChecked(checkbox_value);
+void setUseMiles(bool use_miles) {
+  s_use_miles = use_miles;
   saveUseMiles();
   Serial.printf("Distance units: %s\n", s_use_miles ? "miles" : "km");
 }
 
-void saveRunwaysFromPortal(const char* checkbox_value) {
-  s_show_runways = portalCheckboxChecked(checkbox_value);
+void setShowRunways(bool show) {
+  s_show_runways = show;
   saveShowRunways();
   Serial.printf("Runway overlay: %s\n", s_show_runways ? "on" : "off");
 }
@@ -117,16 +105,6 @@ void formatRing3Label(char* buf, size_t len, float ring3_km, bool use_miles) {
 
 void formatCurrentRing3Label(char* buf, size_t len) {
   formatRing3Label(buf, len, rangeCurrent().ring3_km, s_use_miles);
-}
-
-void unitsReset() {
-  s_use_miles = false;
-  s_show_runways = true;
-  if (s_prefs.begin(kPrefsNamespace, false)) {
-    s_prefs.remove(kPrefsMilesKey);
-    s_prefs.remove(kPrefsRunwaysKey);
-    s_prefs.end();
-  }
 }
 
 }  // namespace ui::radar

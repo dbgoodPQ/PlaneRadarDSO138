@@ -1,8 +1,7 @@
 #include "services/radar_location.h"
 
+#include <Arduino.h>
 #include <Preferences.h>
-#include <cstdlib>
-#include <cstring>
 
 #include "config.h"
 
@@ -14,20 +13,19 @@ constexpr char kPrefsNamespace[] = "radar";
 constexpr char kKeyLat[] = "lat";
 constexpr char kKeyLon[] = "lon";
 
+// Doubles are not written atomically on the ESP32: guard them, since the
+// ADS-B task reads them while the loop task (or the IP lookup) may write.
+portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 double s_lat = config::kDefaultRadarLat;
 double s_lon = config::kDefaultRadarLon;
+bool s_is_set = false;
 
-bool parseCoord(const char* text, double* out) {
-  if (text == nullptr || text[0] == '\0') {
-    return false;
-  }
-  char* end = nullptr;
-  const double v = strtod(text, &end);
-  if (end == text || (end != nullptr && *end != '\0')) {
-    return false;
-  }
-  *out = v;
-  return true;
+void apply(double lat, double lon, bool is_set) {
+  portENTER_CRITICAL(&s_mux);
+  s_lat = lat;
+  s_lon = lon;
+  s_is_set = is_set;
+  portEXIT_CRITICAL(&s_mux);
 }
 
 bool validLatLon(double lat, double lon) {
@@ -40,8 +38,7 @@ void persist(double lat, double lon) {
   prefs.putDouble(kKeyLat, lat);
   prefs.putDouble(kKeyLon, lon);
   prefs.end();
-  s_lat = lat;
-  s_lon = lon;
+  apply(lat, lon, true);
 }
 
 }  // namespace
@@ -53,23 +50,34 @@ void init() {
     const double lat = prefs.getDouble(kKeyLat, config::kDefaultRadarLat);
     const double lon = prefs.getDouble(kKeyLon, config::kDefaultRadarLon);
     if (validLatLon(lat, lon)) {
-      s_lat = lat;
-      s_lon = lon;
+      apply(lat, lon, true);
     }
   }
   prefs.end();
 }
 
-double lat() { return s_lat; }
+double lat() {
+  portENTER_CRITICAL(&s_mux);
+  const double v = s_lat;
+  portEXIT_CRITICAL(&s_mux);
+  return v;
+}
 
-double lon() { return s_lon; }
+double lon() {
+  portENTER_CRITICAL(&s_mux);
+  const double v = s_lon;
+  portEXIT_CRITICAL(&s_mux);
+  return v;
+}
 
-bool saveFromStrings(const char* lat_str, const char* lon_str) {
-  double lat = 0.0;
-  double lon = 0.0;
-  if (!parseCoord(lat_str, &lat) || !parseCoord(lon_str, &lon)) {
-    return false;
-  }
+bool isSet() {
+  portENTER_CRITICAL(&s_mux);
+  const bool v = s_is_set;
+  portEXIT_CRITICAL(&s_mux);
+  return v;
+}
+
+bool save(double lat, double lon) {
   if (!validLatLon(lat, lon)) {
     return false;
   }
@@ -84,8 +92,7 @@ void clear() {
   prefs.remove(kKeyLat);
   prefs.remove(kKeyLon);
   prefs.end();
-  s_lat = config::kDefaultRadarLat;
-  s_lon = config::kDefaultRadarLon;
+  apply(config::kDefaultRadarLat, config::kDefaultRadarLon, false);
 }
 
 }  // namespace services::location

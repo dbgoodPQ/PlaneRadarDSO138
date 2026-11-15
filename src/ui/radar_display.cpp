@@ -791,6 +791,13 @@ void radarDisplayDraw() {
   tft.setTextDatum(textdatum_t::top_left);
 }
 
+void radarDisplayRelease() {
+  if (s_frame_ready) {
+    s_frame.deleteSprite();
+    s_frame_ready = false;
+  }
+}
+
 void radarDisplayRefreshAircraft() {
   initPalette();
 

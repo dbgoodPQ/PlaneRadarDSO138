@@ -2,17 +2,20 @@
 
 namespace services::location {
 
-/** Load saved lat/lon from NVS, or use config defaults. Call once before WiFi setup. */
+/** Load saved lat/lon from NVS, or use config defaults. Call once at boot. */
 void init();
 
-/** Factory defaults when nothing is stored (also used for portal field prefill). */
+/** Current radar center (thread-safe; read by the ADS-B task too). */
 double lat();
 double lon();
 
-/** Parse portal strings, validate, persist to NVS, update runtime values. */
-bool saveFromStrings(const char* lat_str, const char* lon_str);
+/** True once a location has been saved (otherwise the config default is used). */
+bool isSet();
 
-/** Clear stored coordinates (e.g. with WiFi credential reset). */
+/** Validate, persist to NVS and apply. Thread-safe. */
+bool save(double lat, double lon);
+
+/** Clear stored coordinates (back to the config default). */
 void clear();
 
 }  // namespace services::location
