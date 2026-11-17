@@ -22,6 +22,10 @@ struct Aircraft {
   char hex[8];
   char type[5];
   char alt[12];
+  /** Numeric altitude (feet) when has_alt; on_ground when the feed says so. */
+  int32_t alt_ft;
+  bool has_alt;
+  bool on_ground;
   /** Full aircraft name, e.g. "BOEING 737-800" (may be empty). */
   char desc[34];
 };

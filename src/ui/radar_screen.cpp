@@ -50,11 +50,12 @@ struct PlaneItem {
   // Triangle.
   int16_t tx[3];
   int16_t ty[3];
-  // Tag block: left or right anchor, top line y.
-  int16_t tag_x;
-  int16_t tag_y;
-  int16_t tag_w;
-  bool tag_left_aligned;
+  uint32_t color;  // symbol colour (altitude band)
+  // Tag block (radar-area coordinates): 3 lines, 1 (callsign only) or 0 (none
+  // fits). Text is right-aligned when the tag sits left of the symbol.
+  lv_area_t tag;
+  uint8_t tag_lines;
+  bool tag_right_align;
   // Everything drawn for this plane (symbol, vector, tag, selection ring),
   // radar-area coordinates: the area to redraw when it moves.
   lv_area_t box;
@@ -63,6 +64,8 @@ struct PlaneItem {
 struct DotItem {
   int16_t x;
   int16_t y;
+  uint32_t color;
+  bool selected;
 };
 
 services::adsb::Aircraft s_planes[services::adsb::kMaxAircraft];
@@ -113,6 +116,7 @@ lv_obj_t* s_radar = nullptr;
 lv_timer_t* s_timer = nullptr;
 
 bool s_settings_requested = false;
+bool s_range_pressed = false;  // range label drawn inverted while touched
 
 /**
  * Dead-reckon an aircraft's position from its last-fetched fix along its ground
@@ -192,39 +196,176 @@ void computeSymbol(PlaneItem* item, const services::adsb::Aircraft& plane) {
   }
 }
 
-void computeTag(PlaneItem* item, const services::adsb::Aircraft& plane) {
+lv_area_t symbolRect(const PlaneItem& it) {
+  return {std::min({it.tx[0], it.tx[1], it.tx[2]}),
+          std::min({it.ty[0], it.ty[1], it.ty[2]}),
+          std::max({it.tx[0], it.tx[1], it.tx[2]}),
+          std::max({it.ty[0], it.ty[1], it.ty[2]})};
+}
+
+/** Tag spots around the symbol, in order of preference. */
+enum class Spot : uint8_t { Right, Left, AboveRight, BelowRight, AboveLeft, BelowLeft };
+
+lv_area_t spotRect(const PlaneItem& it, Spot spot, int w, int h) {
+  const int half = radar::kAircraftNoseLenPx + radar::kAircraftTailHalfPx +
+                   radar::kAircraftLabelGapPx;
+  constexpr int kSideOffset = 3;  // above/below spots: shift off the centre line
+  int x1 = 0;
+  int y1 = 0;
+  switch (spot) {
+    case Spot::Right:
+      x1 = it.x + half;
+      y1 = it.y - h / 2;
+      break;
+    case Spot::Left:
+      x1 = it.x - half - w;
+      y1 = it.y - h / 2;
+      break;
+    case Spot::AboveRight:
+      x1 = it.x + kSideOffset;
+      y1 = it.y - half - h;
+      break;
+    case Spot::BelowRight:
+      x1 = it.x + kSideOffset;
+      y1 = it.y + half;
+      break;
+    case Spot::AboveLeft:
+      x1 = it.x - kSideOffset - w;
+      y1 = it.y - half - h;
+      break;
+    case Spot::BelowLeft:
+    default:
+      x1 = it.x - kSideOffset - w;
+      y1 = it.y + half;
+      break;
+  }
+  return {x1, y1, x1 + w - 1, y1 + h - 1};
+}
+
+bool rightAligned(Spot spot) {
+  return spot == Spot::Left || spot == Spot::AboveLeft || spot == Spot::BelowLeft;
+}
+
+/**
+ * Place every tag without overlaps: the selected plane first, then nearest the
+ * centre. Each tries 6 spots (toward the centre first); a spot must stay in the
+ * area and clear of placed tags, other symbols, the gear button and the range
+ * label. No spot for the full tag -> callsign only -> no tag. The selected
+ * plane always gets its full tag (first spot, pulled inside the area).
+ */
+void placeTags() {
   const lv_font_t* font = radar::fontSmall();
   const int line_h = lv_font_get_line_height(font);
-  int block_w = 0;
-  for (const char* s : {plane.callsign, plane.type, plane.alt}) {
-    if (s[0] != '\0') {
-      block_w = std::max(block_w, static_cast<int>(radar::draw::textSize(s, font).x));
+
+  static const lv_area_t kObstacles[] = {
+      {radar::kGearMarginPx, radar::kGearMarginPx,
+       radar::kGearMarginPx + radar::kGearButtonSize - 1,
+       radar::kGearMarginPx + radar::kGearButtonSize - 1},
+      {radar::kAreaWidth - radar::kRangeButtonWidth, 0, radar::kAreaWidth - 1,
+       radar::kRangeButtonHeight - 1},
+  };
+  static lv_area_t placed[services::adsb::kMaxAircraft];
+  size_t placed_n = 0;
+
+  // Priority: selected, then nearest first (s_items is sorted far first).
+  uint8_t order[services::adsb::kMaxAircraft];
+  size_t order_n = 0;
+  if (s_selected_item >= 0) {
+    order[order_n++] = static_cast<uint8_t>(s_selected_item);
+  }
+  for (int d = static_cast<int>(s_item_count) - 1; d >= 0; --d) {
+    if (d != s_selected_item) {
+      order[order_n++] = static_cast<uint8_t>(d);
     }
   }
-  const int block_h = line_h * 3;
-  const int symbol_half = radar::kAircraftNoseLenPx + radar::kAircraftTailHalfPx;
 
-  // West half: tag to the right (toward center); east half: to the left.
-  item->tag_left_aligned = item->x < radar::kCenterX;
-  int anchor_x = 0;
-  if (item->tag_left_aligned) {
-    anchor_x = item->x + symbol_half + radar::kAircraftLabelGapPx;
-    anchor_x = std::min(anchor_x, radar::kAreaWidth - block_w - 1);
-  } else {
-    anchor_x = item->x - symbol_half - radar::kAircraftLabelGapPx;
-    anchor_x = std::max(anchor_x, block_w + 1);
+  auto fits = [&](const lv_area_t& r, size_t self) {
+    if (r.x1 < 1 || r.y1 < 1 || r.x2 > radar::kAreaWidth - 2 ||
+        r.y2 > radar::kAreaHeight - 2) {
+      return false;
+    }
+    for (const lv_area_t& o : kObstacles) {
+      if (radar::draw::overlaps(r, o)) {
+        return false;
+      }
+    }
+    for (size_t i = 0; i < placed_n; ++i) {
+      if (radar::draw::overlaps(r, placed[i])) {
+        return false;
+      }
+    }
+    for (size_t d = 0; d < s_item_count; ++d) {
+      if (d != self && radar::draw::overlaps(r, symbolRect(s_items[d]))) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  for (size_t k = 0; k < order_n; ++k) {
+    const size_t d = order[k];
+    PlaneItem& it = s_items[d];
+    const services::adsb::Aircraft& plane = s_planes[it.index];
+
+    int full_w = 0;
+    for (const char* s : {plane.callsign, plane.type, plane.alt}) {
+      if (s[0] != 0) {
+        full_w = std::max(full_w, static_cast<int>(radar::draw::textSize(s, font).x));
+      }
+    }
+    const int short_w =
+        static_cast<int>(radar::draw::textSize(plane.callsign, font).x);
+
+    const bool west = it.x < radar::kCenterX;
+    const Spot spots[6] = {
+        west ? Spot::Right : Spot::Left,
+        west ? Spot::Left : Spot::Right,
+        west ? Spot::AboveRight : Spot::AboveLeft,
+        west ? Spot::BelowRight : Spot::BelowLeft,
+        west ? Spot::AboveLeft : Spot::AboveRight,
+        west ? Spot::BelowLeft : Spot::BelowRight,
+    };
+
+    it.tag_lines = 0;
+    const bool selected = static_cast<int>(d) == s_selected_item;
+    for (const uint8_t lines : {static_cast<uint8_t>(3), static_cast<uint8_t>(1)}) {
+      if (lines == 1 && (selected || plane.callsign[0] == 0)) {
+        break;
+      }
+      const int w = lines == 3 ? full_w : short_w;
+      for (const Spot spot : spots) {
+        const lv_area_t r = spotRect(it, spot, w, line_h * lines);
+        if (fits(r, d)) {
+          it.tag = r;
+          it.tag_lines = lines;
+          it.tag_right_align = rightAligned(spot);
+          break;
+        }
+      }
+      if (it.tag_lines != 0) {
+        break;
+      }
+    }
+
+    if (it.tag_lines == 0 && selected) {
+      lv_area_t r = spotRect(it, spots[0], full_w, line_h * 3);
+      const int dx = std::max(1 - static_cast<int>(r.x1), 0) -
+                     std::max(static_cast<int>(r.x2) - (radar::kAreaWidth - 2), 0);
+      const int dy = std::max(1 - static_cast<int>(r.y1), 0) -
+                     std::max(static_cast<int>(r.y2) - (radar::kAreaHeight - 2), 0);
+      lv_area_move(&r, dx, dy);
+      it.tag = r;
+      it.tag_lines = 3;
+      it.tag_right_align = rightAligned(spots[0]);
+    }
+    if (it.tag_lines != 0) {
+      placed[placed_n++] = it.tag;
+    }
   }
-  int top = item->y - block_h / 2;
-  top = std::max(1, std::min(top, radar::kAreaHeight - block_h - 1));
-  item->tag_x = anchor_x;
-  item->tag_y = top;
-  item->tag_w = static_cast<int16_t>(block_w);
 }
 
 /** Bounding box of everything drawn for the plane (+ antialiasing margin). */
 void computeBox(PlaneItem* item) {
-  const services::adsb::Aircraft& plane = s_planes[item->index];
-  const int line_h = lv_font_get_line_height(radar::fontSmall());
   const int ring = radar::kSelectRingRadiusPx + radar::kSelectRingWidthPx;
   int x1 = item->x - ring;
   int y1 = item->y - ring;
@@ -240,21 +381,26 @@ void computeBox(PlaneItem* item) {
   x2 = std::max<int>({x2, item->vx0, item->vx1});
   y1 = std::min<int>({y1, item->vy0, item->vy1});
   y2 = std::max<int>({y2, item->vy0, item->vy1});
-  if (plane.callsign[0] != 0 || plane.type[0] != 0 || plane.alt[0] != 0) {
-    const int tx1 =
-        item->tag_left_aligned ? item->tag_x : item->tag_x - item->tag_w;
-    x1 = std::min(x1, tx1);
-    x2 = std::max(x2, tx1 + item->tag_w);
-    y1 = std::min<int>(y1, item->tag_y);
-    y2 = std::max(y2, item->tag_y + line_h * 3);
+  if (item->tag_lines != 0) {
+    x1 = std::min<int>(x1, item->tag.x1);
+    x2 = std::max<int>(x2, item->tag.x2);
+    y1 = std::min<int>(y1, item->tag.y1);
+    y2 = std::max<int>(y2, item->tag.y2);
   }
-  constexpr int kPad = 2;
+  // Covers the selected tag's background (2 px) plus antialiasing.
+  constexpr int kPad = 3;
   item->box = {x1 - kPad, y1 - kPad, x2 + kPad, y2 + kPad};
 }
 
 lv_area_t dotBox(const DotItem& d) {
-  constexpr int r = radar::kBeyondRingDotRadiusPx + 2;
+  const int r = (d.selected ? radar::kSelectDotRingRadiusPx + radar::kSelectRingWidthPx
+                            : radar::kBeyondRingDotRadiusPx) +
+                2;
   return {d.x - r, d.y - r, d.x + r, d.y + r};
+}
+
+uint32_t planeColor(const services::adsb::Aircraft& plane) {
+  return radar::altitudeColor(plane.on_ground, plane.has_alt, plane.alt_ft);
 }
 
 /** Rim dot on the true bearing for traffic beyond the outer ring. */
@@ -310,10 +456,13 @@ void computeAircraft() {
       item.x = x;
       item.y = y;
       item.dist_sq = radar::distSqFromCenter(x, y);
+      item.color = planeColor(s_planes[i]);
       continue;
     }
 
     DotItem dot;
+    dot.color = planeColor(s_planes[i]);
+    dot.selected = static_cast<int>(i) == selected_index;
     if (beyondRingDot(dx_km, dy_km, dist_km, &dot)) {
       s_dots[s_dot_count++] = dot;
     }
@@ -326,13 +475,14 @@ void computeAircraft() {
               return a.dist_sq > b.dist_sq;
             });
   for (size_t d = 0; d < s_item_count; ++d) {
-    const services::adsb::Aircraft& plane = s_planes[s_items[d].index];
-    computeSymbol(&s_items[d], plane);
-    computeTag(&s_items[d], plane);
-    computeBox(&s_items[d]);
+    computeSymbol(&s_items[d], s_planes[s_items[d].index]);
     if (s_items[d].index == selected_index) {
       s_selected_item = static_cast<int>(d);
     }
+  }
+  placeTags();
+  for (size_t d = 0; d < s_item_count; ++d) {
+    computeBox(&s_items[d]);
   }
 }
 
@@ -375,7 +525,8 @@ void invalidateBox(const lv_area_t& box) {
 
 bool containsDot(const DotItem* dots, size_t n, const DotItem& d) {
   for (size_t i = 0; i < n; ++i) {
-    if (dots[i].x == d.x && dots[i].y == d.y) {
+    if (dots[i].x == d.x && dots[i].y == d.y && dots[i].color == d.color &&
+        dots[i].selected == d.selected) {
       return true;
     }
   }
@@ -503,16 +654,67 @@ void drawLabels(lv_layer_t* layer, int ox, int oy) {
   const int distance = static_cast<int>(lroundf(miles ? ring3_km / 1.609344f : ring3_km));
   char range[16];
   snprintf(range, sizeof(range), "%d %s", distance, miles ? "mi" : "km");
-  radar::draw::text(layer, range, radar::fontLarge(), radar::kColorLabel,
-                    ox + radar::kAreaWidth - 5, oy + 5, HAlign::Right,
-                    VAlign::Top, /*bg_pad_x=*/3, /*bg_pad_y=*/2,
-                    radar::kColorBackground);
+  radar::draw::text(
+      layer, range, radar::fontLarge(),
+      s_range_pressed ? radar::kColorBackground : radar::kColorLabel,
+      ox + radar::kAreaWidth - 5, oy + 5, HAlign::Right, VAlign::Top,
+      /*bg_pad_x=*/3, /*bg_pad_y=*/2,
+      s_range_pressed ? radar::kColorRangePressedBg : radar::kColorBackground);
+}
+
+void drawPlane(lv_layer_t* layer, int ox, int oy, const PlaneItem& it) {
+  if (it.vx0 != it.vx1 || it.vy0 != it.vy1) {
+    radar::draw::line(layer, ox + it.vx0, oy + it.vy0, ox + it.vx1, oy + it.vy1,
+                      radar::kAircraftTrackLineWidth, radar::kColorTrackVector);
+  }
+  radar::draw::fillTriangle(layer, ox + it.tx[0], oy + it.ty[0], ox + it.tx[1],
+                            oy + it.ty[1], ox + it.tx[2], oy + it.ty[2],
+                            it.color);
+}
+
+void drawTag(lv_layer_t* layer, int ox, int oy, const PlaneItem& it,
+             bool selected) {
+  if (it.tag_lines == 0) {
+    return;
+  }
+  const services::adsb::Aircraft& plane = s_planes[it.index];
+  const lv_font_t* font = radar::fontSmall();
+  const int line_h = lv_font_get_line_height(font);
+  if (selected) {
+    constexpr int kBgPad = 2;
+    radar::draw::fillRect(layer, ox + it.tag.x1 - kBgPad, oy + it.tag.y1 - kBgPad,
+                          lv_area_get_width(&it.tag) + kBgPad * 2,
+                          lv_area_get_height(&it.tag) + kBgPad * 2,
+                          radar::kColorSelectedTagBg);
+  }
+  const HAlign h = it.tag_right_align ? HAlign::Right : HAlign::Left;
+  const int x = ox + (it.tag_right_align ? it.tag.x2 + 1 : it.tag.x1);
+  int y = oy + it.tag.y1;
+  radar::draw::text(layer, plane.callsign, font, radar::kColorLabel, x, y, h,
+                    VAlign::Top);
+  if (it.tag_lines < 3) {
+    return;
+  }
+  y += line_h;
+  if (plane.type[0] != 0) {
+    radar::draw::text(layer, plane.type, font, radar::kColorTagType, x, y, h,
+                      VAlign::Top);
+  }
+  y += line_h;
+  if (plane.alt[0] != 0) {
+    radar::draw::text(layer, plane.alt, font, radar::kColorTagAltitude, x, y, h,
+                      VAlign::Top);
+  }
 }
 
 void drawAircraft(lv_layer_t* layer, int ox, int oy) {
   for (size_t d = 0; d < s_dot_count; ++d) {
-    radar::draw::fillCircle(layer, ox + s_dots[d].x, oy + s_dots[d].y,
-                            radar::kBeyondRingDotRadiusPx, radar::kColorAircraft);
+    const DotItem& dot = s_dots[d];
+    if (dot.selected) {
+      continue;  // drawn last, on top
+    }
+    radar::draw::fillCircle(layer, ox + dot.x, oy + dot.y,
+                            radar::kBeyondRingDotRadiusPx, dot.color);
   }
 
   // Planes whose box misses the strip being drawn are skipped whole.
@@ -523,50 +725,34 @@ void drawAircraft(lv_layer_t* layer, int ox, int oy) {
   };
 
   for (size_t d = 0; d < s_item_count; ++d) {
-    const PlaneItem& it = s_items[d];
-    if (!onStrip(it)) {
-      continue;
+    if (static_cast<int>(d) != s_selected_item && onStrip(s_items[d])) {
+      drawPlane(layer, ox, oy, s_items[d]);
     }
-    if (it.vx0 != it.vx1 || it.vy0 != it.vy1) {
-      radar::draw::line(layer, ox + it.vx0, oy + it.vy0, ox + it.vx1,
-                        oy + it.vy1, radar::kAircraftTrackLineWidth,
-                        radar::kColorTrackVector);
+  }
+  for (size_t d = 0; d < s_item_count; ++d) {
+    if (static_cast<int>(d) != s_selected_item && onStrip(s_items[d])) {
+      drawTag(layer, ox, oy, s_items[d], false);
     }
-    radar::draw::fillTriangle(layer, ox + it.tx[0], oy + it.ty[0], ox + it.tx[1],
-                              oy + it.ty[1], ox + it.tx[2], oy + it.ty[2],
-                              radar::kColorAircraft);
   }
 
+  // Selected plane last, on top of everything.
   if (s_selected_item >= 0) {
     const PlaneItem& it = s_items[s_selected_item];
-    radar::draw::ring(layer, ox + it.x, oy + it.y, radar::kSelectRingRadiusPx,
-                      radar::kSelectRingWidthPx, radar::kColorSelection);
+    if (onStrip(it)) {
+      drawPlane(layer, ox, oy, it);
+      radar::draw::ring(layer, ox + it.x, oy + it.y, radar::kSelectRingRadiusPx,
+                        radar::kSelectRingWidthPx, radar::kColorSelection);
+      drawTag(layer, ox, oy, it, true);
+    }
   }
-
-  const lv_font_t* font = radar::fontSmall();
-  const int line_h = lv_font_get_line_height(font);
-  for (size_t d = 0; d < s_item_count; ++d) {
-    const PlaneItem& it = s_items[d];
-    if (!onStrip(it)) {
-      continue;
-    }
-    const services::adsb::Aircraft& plane = s_planes[it.index];
-    const HAlign h = it.tag_left_aligned ? HAlign::Left : HAlign::Right;
-    const int x = ox + it.tag_x;
-    int y = oy + it.tag_y;
-    if (plane.callsign[0] != '\0') {
-      radar::draw::text(layer, plane.callsign, font, radar::kColorLabel, x, y, h,
-                        VAlign::Top);
-    }
-    y += line_h;
-    if (plane.type[0] != '\0') {
-      radar::draw::text(layer, plane.type, font, radar::kColorTagType, x, y, h,
-                        VAlign::Top);
-    }
-    y += line_h;
-    if (plane.alt[0] != '\0') {
-      radar::draw::text(layer, plane.alt, font, radar::kColorTagAltitude, x, y, h,
-                        VAlign::Top);
+  for (size_t d = 0; d < s_dot_count; ++d) {
+    const DotItem& dot = s_dots[d];
+    if (dot.selected) {
+      radar::draw::fillCircle(layer, ox + dot.x, oy + dot.y,
+                              radar::kBeyondRingDotRadiusPx, radar::kColorSelection);
+      radar::draw::ring(layer, ox + dot.x, oy + dot.y,
+                        radar::kSelectDotRingRadiusPx, radar::kSelectRingWidthPx,
+                        radar::kColorSelection);
     }
   }
 }
@@ -622,6 +808,15 @@ void onRadarClicked(lv_event_t*) {
 
 void onRangeClicked(lv_event_t*) { nextRange(); }
 
+/** Range label inverted while the finger is on it. */
+void onRangePress(lv_event_t* e) {
+  const bool pressed = lv_event_get_code(e) == LV_EVENT_PRESSED;
+  if (pressed != s_range_pressed) {
+    s_range_pressed = pressed;
+    lv_obj_invalidate(static_cast<lv_obj_t*>(lv_event_get_target(e)));
+  }
+}
+
 // Handled from loop(): opening settings deletes this screen.
 void onGearClicked(lv_event_t*) { s_settings_requested = true; }
 
@@ -667,6 +862,10 @@ void open() {
   lv_obj_set_size(range_btn, radar::kRangeButtonWidth, radar::kRangeButtonHeight);
   lv_obj_align(range_btn, LV_ALIGN_TOP_RIGHT, 0, 0);
   lv_obj_add_event_cb(range_btn, onRangeClicked, LV_EVENT_CLICKED, nullptr);
+  lv_obj_add_event_cb(range_btn, onRangePress, LV_EVENT_PRESSED, nullptr);
+  lv_obj_add_event_cb(range_btn, onRangePress, LV_EVENT_RELEASED, nullptr);
+  lv_obj_add_event_cb(range_btn, onRangePress, LV_EVENT_PRESS_LOST, nullptr);
+  s_range_pressed = false;
 
   detail_panel::create(s_screen);
 

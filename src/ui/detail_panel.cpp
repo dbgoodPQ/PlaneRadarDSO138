@@ -6,6 +6,7 @@
 #include <initializer_list>
 
 #include "services/route_lookup.h"
+#include "ui/radar_draw.h"
 #include "ui/radar_fonts.h"
 #include "ui/radar_range.h"
 #include "ui/radar_theme.h"
@@ -23,6 +24,7 @@ constexpr const char* kRowNames[kRowCount] = {"ALT", "SPD", "TRK", "DST", "BRG"}
 
 lv_obj_t* s_panel = nullptr;
 lv_obj_t* s_status = nullptr;    // "Tap a plane" / "Signal lost"
+lv_obj_t* s_legend = nullptr;    // altitude colours, shown with the hint
 lv_obj_t* s_details = nullptr;   // everything below, hidden when no selection
 lv_obj_t* s_callsign = nullptr;
 lv_obj_t* s_type = nullptr;
@@ -84,6 +86,46 @@ void setHidden(lv_obj_t* obj, bool hidden) {
 void setOptional(lv_obj_t* label, const char* text) {
   setText(label, text);
   setHidden(label, text[0] == '\0');
+}
+
+// --- Altitude legend ---
+struct LegendEntry {
+  uint32_t rgb;
+  const char* text;
+};
+constexpr LegendEntry kLegend[] = {
+    {radar::kColorAltCruise, "Above 25k ft"},
+    {radar::kColorAltHigh, "10k - 25k ft"},
+    {radar::kColorAltMid, "3k - 10k ft"},
+    {radar::kColorAltLow, "Below 3k ft"},
+    {radar::kColorAltGround, "Ground"},
+    {radar::kColorAltUnknown, "Unknown"},
+};
+constexpr int kLegendCount = sizeof(kLegend) / sizeof(kLegend[0]);
+constexpr int kLegendTopPad = 6;
+constexpr int kLegendSwatchPx = 9;
+constexpr int kLegendTextX = kLegendSwatchPx + 6;
+
+int legendRowHeight() { return lv_font_get_line_height(radar::fontSmall()) + 3; }
+
+void onLegendDraw(lv_event_t* e) {
+  lv_layer_t* layer = lv_event_get_layer(e);
+  lv_area_t c;
+  lv_obj_get_coords(static_cast<lv_obj_t*>(lv_event_get_target(e)), &c);
+  const lv_font_t* font = radar::fontSmall();
+  const int row_h = legendRowHeight();
+  int y = c.y1 + kLegendTopPad;
+  radar::draw::text(layer, "Altitude", font, radar::kColorPanelDim, c.x1, y,
+                    radar::draw::HAlign::Left, radar::draw::VAlign::Top);
+  for (const LegendEntry& entry : kLegend) {
+    y += row_h;
+    const int mid = y + lv_font_get_line_height(font) / 2;
+    radar::draw::fillRect(layer, c.x1, mid - kLegendSwatchPx / 2, kLegendSwatchPx,
+                          kLegendSwatchPx, entry.rgb);
+    radar::draw::text(layer, entry.text, font, radar::kColorPanelText,
+                      c.x1 + kLegendTextX, y, radar::draw::HAlign::Left,
+                      radar::draw::VAlign::Top);
+  }
 }
 
 int roundDeg(float deg) {
@@ -156,6 +198,16 @@ void create(lv_obj_t* screen) {
 
   s_status = makeLabel(s_panel, radar::fontSmall(), radar::kColorPanelDim, true);
 
+  // Altitude colour legend (idle panel only): one object that draws itself,
+  // instead of ~20 widgets (saves ~2.5 KB of heap).
+  s_legend = lv_obj_create(s_panel);
+  lv_obj_remove_style_all(s_legend);
+  lv_obj_remove_flag(s_legend, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_remove_flag(s_legend, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_size(s_legend, lv_pct(100),
+                  kLegendTopPad + legendRowHeight() * (1 + kLegendCount));
+  lv_obj_add_event_cb(s_legend, onLegendDraw, LV_EVENT_DRAW_MAIN, nullptr);
+
   s_details = makeColumn(s_panel);
   s_callsign = makeLabel(s_details, radar::fontLarge(), radar::kColorLabel, false);
   s_type = makeLabel(s_details, radar::fontCardinal(), radar::kColorTagType, false);
@@ -194,6 +246,7 @@ void create(lv_obj_t* screen) {
 void forget() {
   s_panel = nullptr;
   s_status = nullptr;
+  s_legend = nullptr;
   s_details = nullptr;
   s_callsign = nullptr;
   s_type = nullptr;
@@ -213,6 +266,7 @@ void showHint() {
   setText(s_status, "Tap a plane to see its details.\n\nTap the range to zoom.");
   lv_obj_set_style_text_color(s_status, lv_color_hex(radar::kColorPanelDim), 0);
   setHidden(s_status, false);
+  setHidden(s_legend, false);
   setHidden(s_details, true);
 }
 
@@ -224,6 +278,7 @@ void show(const services::adsb::Aircraft& plane, float dist_km,
   setText(s_status, "Signal lost");
   lv_obj_set_style_text_color(s_status, lv_color_hex(radar::kColorPanelWarning), 0);
   setHidden(s_status, !lost);
+  setHidden(s_legend, true);
   setHidden(s_details, false);
 
   setText(s_callsign, plane.callsign[0] != '\0' ? plane.callsign : plane.hex);

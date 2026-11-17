@@ -203,25 +203,25 @@ void copyJsonStringTrimmed(const JsonObject& obj, const char* key, char* out,
   out[n] = '\0';
 }
 
-void formatAltitudeTag(const JsonObject& plane, char* out, size_t out_len) {
-  out[0] = '\0';
-  if (out_len == 0) {
-    return;
-  }
+/** Altitude text for the tag ("12345 ft" / "GND") plus the numeric fields. */
+void readAltitude(const JsonObject& plane, Aircraft* ac) {
+  ac->alt[0] = 0;
+  ac->alt_ft = 0;
+  ac->has_alt = false;
+  ac->on_ground = false;
 
-  if (plane["alt_baro"].is<const char*>()) {
-    const char* s = plane["alt_baro"].as<const char*>();
-    if (strcmp(s, "ground") == 0) {
-      strncpy(out, "GND", out_len - 1);
-      out[out_len - 1] = '\0';
-      return;
-    }
+  if (isOnGround(plane)) {
+    snprintf(ac->alt, sizeof(ac->alt), "GND");
+    ac->on_ground = true;
+    return;
   }
 
   float alt = 0.0f;
   if (readJsonFloat(plane, "alt_baro", &alt) ||
       readJsonFloat(plane, "alt_geom", &alt)) {
-    snprintf(out, out_len, "%d ft", static_cast<int>(lroundf(alt)));
+    ac->alt_ft = static_cast<int32_t>(lroundf(alt));
+    ac->has_alt = true;
+    snprintf(ac->alt, sizeof(ac->alt), "%d ft", static_cast<int>(ac->alt_ft));
   }
 }
 
@@ -234,7 +234,7 @@ void fillTagFields(Aircraft* ac, const JsonObject& plane) {
 
   copyJsonStringTrimmed(plane, "t", ac->type, sizeof(ac->type));
   copyJsonStringTrimmed(plane, "desc", ac->desc, sizeof(ac->desc));
-  formatAltitudeTag(plane, ac->alt, sizeof(ac->alt));
+  readAltitude(plane, ac);
 }
 
 }  // namespace

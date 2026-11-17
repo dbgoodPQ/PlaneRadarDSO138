@@ -98,4 +98,42 @@ constexpr uint32_t kColorPanelDim = 0x8A96A8;
 constexpr uint32_t kColorPanelText = 0xE6EAF0;
 constexpr uint32_t kColorPanelWarning = 0xFFA040;
 
+/** Selected plane's tag background; range label while pressed. */
+constexpr uint32_t kColorSelectedTagBg = 0x1C2630;
+constexpr uint32_t kColorRangePressedBg = 0x30D050;
+
+/** Selected plane beyond the outer ring: ring around its rim dot. */
+constexpr int kSelectDotRingRadiusPx = 8;
+
+/** Aircraft symbol colour by altitude band (feet). Red stays free for
+ *  emergencies. */
+constexpr int32_t kAltLowFt = 3000;
+constexpr int32_t kAltMidFt = 10000;
+constexpr int32_t kAltHighFt = 25000;
+constexpr uint32_t kColorAltGround = 0x9AA0A6;
+constexpr uint32_t kColorAltLow = 0xFF8C1A;
+constexpr uint32_t kColorAltMid = 0xFFD21A;
+constexpr uint32_t kColorAltHigh = 0x3CE65A;
+constexpr uint32_t kColorAltCruise = 0x3CC8FF;
+constexpr uint32_t kColorAltUnknown = 0xFFFFFF;
+
+inline uint32_t altitudeColor(bool on_ground, bool has_alt, int32_t alt_ft) {
+  if (on_ground) {
+    return kColorAltGround;
+  }
+  if (!has_alt) {
+    return kColorAltUnknown;
+  }
+  if (alt_ft < kAltLowFt) {
+    return kColorAltLow;
+  }
+  if (alt_ft < kAltMidFt) {
+    return kColorAltMid;
+  }
+  if (alt_ft < kAltHighFt) {
+    return kColorAltHigh;
+  }
+  return kColorAltCruise;
+}
+
 }  // namespace ui::radar
