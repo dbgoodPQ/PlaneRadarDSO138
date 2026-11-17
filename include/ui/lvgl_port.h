@@ -9,16 +9,10 @@ namespace ui::lvgl_port {
 void init();
 
 /**
- * Run LVGL timers/redraws. Call often from loop() while an LVGL screen is
- * shown. Only call LVGL from the loop task: LVGL is not thread-safe.
+ * Run LVGL timers/redraws. Call often from loop(). Only call LVGL from the
+ * loop task: LVGL is not thread-safe.
  */
 void handle();
-
-/**
- * Hand the panel back to LVGL after something else drew on it (the legacy
- * radar): forces a full repaint of the active screen.
- */
-void resume();
 
 /**
  * Ignore the touch panel until the finger is lifted once. Use when opening a

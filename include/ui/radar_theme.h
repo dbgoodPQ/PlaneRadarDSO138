@@ -2,32 +2,31 @@
 
 #include <cstdint>
 
+#include "config.h"
+
 namespace ui::radar {
 
-constexpr int kSize = 240;
-constexpr int kCenterX = kSize / 2;
-constexpr int kCenterY = kSize / 2;
+/** Radar area: the left 2/3 of the 320x240 panel (the right 1/3 is free). */
+constexpr int kAreaWidth = (config::kDisplayWidth * 2 + 2) / 3;  // 214
+constexpr int kAreaHeight = config::kDisplayHeight;              // 240
+constexpr int kCenterX = kAreaWidth / 2;
+constexpr int kCenterY = kAreaHeight / 2;
 
-/** Outermost grid ring (inside edge labels). */
-constexpr int kGridOuterRadius = 107;
+/** Outermost grid ring (inside the E/W labels). */
+constexpr int kGridOuterRadius = 94;
 
 /** N: offset from top edge (top_center, negative = up). */
 constexpr int kCardinalNorthOffsetY = -1;
 /** S: offset from bottom edge (bottom_center, positive = down). */
-constexpr int kCardinalSouthOffsetY = 3;
+constexpr int kCardinalSouthOffsetY = 1;
 
 /** Gap between scale label right edge and outer ring on the east spoke (px). */
 constexpr int kScaleGapFromOuterRing = 6;
 
-/** Target cap height (px) for N/S/E/W. */
-constexpr int kCardinalLabelHeightPx = 14;
-/** Scale label is this many px shorter than cardinals. */
-constexpr int kScaleBelowCardinalPx = 3;
-
 constexpr int kRingCount = 4;
 
-/** Shared grid stroke: drawWideLine half-width (~2 px total); rings use the same px count. */
-constexpr float kGridStrokeHalfWidth = 1.0f;
+/** Grid stroke width (rings and crosshair), px. */
+constexpr int kGridStrokeWidth = 2;
 
 constexpr int kCenterDotRadius = 2;
 
@@ -43,12 +42,10 @@ constexpr int kAircraftSpeedLineMinPx = 2;
 constexpr float kAircraftTrackRefOuterKm = 13.3f;
 /** Shorter than full 60 s horizon at ref scale; ×1.5 length boost applied. */
 constexpr float kAircraftTrackLengthScale = 1.5f / 5.0f;
-/** drawWideLine half-width for speed vectors (~2 px total). */
-constexpr float kAircraftTrackLineHalfWidth = 1.0f;
+/** Speed vector stroke width (px). */
+constexpr int kAircraftTrackLineWidth = 2;
 
-constexpr float kRunwayLineWidthPx = 2.0f;
-constexpr float kRunwayLineHalfWidth = kRunwayLineWidthPx * 0.5f;
-constexpr int kRunwayLabelHeightPx = kCardinalLabelHeightPx;
+constexpr int kRunwayLineWidthPx = 2;
 constexpr int kRunwayLabelGapPx = 3;
 /** Gap from triangle edge to tag block (px). */
 constexpr int kAircraftLabelGapPx = 1;
@@ -56,48 +53,46 @@ constexpr int kAircraftLabelGapPx = 1;
 constexpr int kAircraftInsideRingInsetPx =
     kAircraftNoseLenPx + kAircraftTailHalfPx + 1;
 
-/** Beyond-ring traffic: bearing cues on screen rim (correct direction, fixed radius). */
+/** Beyond-ring traffic: bearing cues on a circle near the area edge. */
 constexpr int kBeyondRingDotRadiusPx = 4;
 constexpr int kBeyondRingScreenMarginPx = 2;
-/** Target cap height (px) for aircraft tags (bold, slightly above scale label). */
-constexpr int kAircraftTagLabelHeightPx = 13;
+/** Radius of the circle the beyond-ring dots sit on. */
+constexpr int kBeyondRingRimRadiusPx =
+    (kCenterX < kCenterY ? kCenterX : kCenterY) - kBeyondRingScreenMarginPx;
 
-/** RGB565 palette targets (applied in initPalette). */
-constexpr uint8_t kBgR = 4;
-constexpr uint8_t kBgG = 10;
-constexpr uint8_t kBgB = 28;
-constexpr uint8_t kGridR = 16;
-constexpr uint8_t kGridG = 100;
-constexpr uint8_t kGridB = 32;
-constexpr uint8_t kAircraftR = 255;
-constexpr uint8_t kAircraftG = 0;
-constexpr uint8_t kAircraftB = 0;
-constexpr uint8_t kTrackR = 255;
-constexpr uint8_t kTrackG = 0;
-constexpr uint8_t kTrackB = 255;
-constexpr uint8_t kTagTypeR = 255;
-constexpr uint8_t kTagTypeG = 200;
-constexpr uint8_t kTagTypeB = 0;
-constexpr uint8_t kTagAltR = 90;
-constexpr uint8_t kTagAltG = 200;
-constexpr uint8_t kTagAltB = 255;
-constexpr uint8_t kRunwayR = 56;
-constexpr uint8_t kRunwayG = 150;
-constexpr uint8_t kRunwayB = 170;
+/** Range indicator (top right of the radar area) doubles as the range button:
+ *  touch area size, larger than the text for the resistive panel. */
+constexpr int kRangeButtonWidth = 64;
+constexpr int kRangeButtonHeight = 36;
+
+/** Plane selection: a tap within this distance of a symbol selects it. */
+constexpr int kSelectHitRadiusPx = 20;
+/** Ring drawn around the selected plane. */
+constexpr int kSelectRingRadiusPx = 12;
+constexpr int kSelectRingWidthPx = 2;
+/** Once the selected plane is gone from the feed, clear it after this long. */
+constexpr unsigned long kSelectLostClearMs = 10000;
+
+/** Detail panel: the right 1/3 of the panel. */
+constexpr int kPanelX = kAreaWidth;
+constexpr int kPanelWidth = config::kDisplayWidth - kAreaWidth;  // 106
+
+/** Palette (24-bit RGB; LVGL converts to RGB565). */
+constexpr uint32_t kColorBackground = 0x040A1C;
+constexpr uint32_t kColorGrid = 0x106420;
+constexpr uint32_t kColorLabel = 0xFFFFFF;
+constexpr uint32_t kColorCenter = 0xFFFFFF;
+constexpr uint32_t kColorAircraft = 0xFF0000;
+constexpr uint32_t kColorTrackVector = 0xFF00FF;
+constexpr uint32_t kColorTagType = 0xFFC800;
+constexpr uint32_t kColorTagAltitude = 0x5AC8FF;
+constexpr uint32_t kColorRunway = 0x3896AA;
 /** Lighter teal for ICAO labels (vs runway lines). */
-constexpr uint8_t kRunwayLabelR = 110;
-constexpr uint8_t kRunwayLabelG = 210;
-constexpr uint8_t kRunwayLabelB = 230;
-
-extern uint16_t kColorBackground;
-extern uint16_t kColorGrid;
-extern uint16_t kColorLabel;
-extern uint16_t kColorCenter;
-extern uint16_t kColorAircraft;
-extern uint16_t kColorTrackVector;
-extern uint16_t kColorTagType;
-extern uint16_t kColorTagAltitude;
-extern uint16_t kColorRunway;
-extern uint16_t kColorRunwayLabel;
+constexpr uint32_t kColorRunwayLabel = 0x6ED2E6;
+constexpr uint32_t kColorSelection = 0xFFFFFF;
+/** Detail panel: field names, secondary text, warnings. */
+constexpr uint32_t kColorPanelDim = 0x8A96A8;
+constexpr uint32_t kColorPanelText = 0xE6EAF0;
+constexpr uint32_t kColorPanelWarning = 0xFFA040;
 
 }  // namespace ui::radar

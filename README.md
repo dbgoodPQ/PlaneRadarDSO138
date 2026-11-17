@@ -144,21 +144,21 @@ include/
   hardware/
     lgfx_config.hpp
     display.h
-    display_font.h
   data/
     large_airports.h
   ui/
-    radar_theme.h
+    radar_theme.h          — radar layout (left 2/3 of the panel) and colors
     radar_range.h
-    radar_display.h
+    radar_screen.h         — LVGL radar screen
+    radar_geometry.h
+    radar_draw.h
+    radar_fonts.h          — Noto Sans Bold LVGL fonts (src/ui/fonts/)
     runway_overlay.h
     status_screens.h
   services/
     wifi_setup.h
     radar_location.h
     adsb_client.h
-data/
-  ui_font.vlw              — embedded smooth UI font (Noto Sans Bold)
 scripts/
   build_large_airports.py
 src/

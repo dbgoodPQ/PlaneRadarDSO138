@@ -1,9 +1,8 @@
 /**
  * Plane Radar — CYD (ESP32-2432S028R).
  *
- * Boot: touch calibration (first boot) -> Wi-Fi screen (LVGL) -> radar.
- * Until the LVGL radar exists (phase 3), the legacy sprite radar draws straight
- * to the panel and LVGL only runs while a settings screen is open.
+ * Boot: touch calibration (first boot) -> Wi-Fi screen -> radar screen.
+ * Everything on the panel is LVGL; the loop task is the only one calling it.
  */
 
 #include <Arduino.h>
@@ -15,78 +14,33 @@
 #include "services/adsb_client.h"
 #include "services/ip_location.h"
 #include "services/radar_location.h"
+#include "services/route_lookup.h"
 #include "services/wifi_conn.h"
 #include "ui/lvgl_port.h"
-#include "ui/radar_display.h"
 #include "ui/radar_range.h"
+#include "ui/radar_screen.h"
 #include "ui/wifi_screen.h"
 
 namespace {
 
 /** Retry the IP location lookup this often until one succeeds. */
 constexpr unsigned long kIpLookupRetryMs = 30000;
-/** Touch dropouts shorter than this don't break a long press (resistive panel). */
-constexpr unsigned long kTouchDropoutMs = 150;
-
-enum class Mode { Settings, Radar };
-
-Mode g_mode = Mode::Settings;
-unsigned long g_last_redraw_ms = 0;
-
-bool g_touch_down = false;
-unsigned long g_touch_down_since_ms = 0;
-unsigned long g_touch_last_seen_ms = 0;
-
-void showRadar() {
-  g_mode = Mode::Radar;
-  g_touch_down = false;
-  ui::radarDisplayDraw();
-  g_last_redraw_ms = millis();
-}
 
 void openWifiSettings() {
-  ui::radarDisplayRelease();  // give the frame buffer's RAM to LVGL
+  // The finger that held the radar is still down: don't let it tap the list.
   ui::lvgl_port::ignoreTouchUntilRelease();
-  ui::wifi_screen::openScan(/*cancelable=*/true);
-  ui::lvgl_port::resume();
-  g_mode = Mode::Settings;
-}
-
-/** True once a finger has stayed on the radar for kSettingsLongPressMs. */
-bool radarLongPress() {
-  int16_t x;
-  int16_t y;
-  const unsigned long now = millis();
-  if (hardware::touch::read(&x, &y)) {
-    if (!g_touch_down) {
-      g_touch_down = true;
-      g_touch_down_since_ms = now;
-    }
-    g_touch_last_seen_ms = now;
-    if (now - g_touch_down_since_ms >= config::kSettingsLongPressMs) {
-      g_touch_down = false;
-      return true;
-    }
-  } else if (g_touch_down && now - g_touch_last_seen_ms > kTouchDropoutMs) {
-    g_touch_down = false;
-  }
-  return false;
-}
-
-void onRangeTap() {
-  ui::radar::rangeNext();
-  char label[12];
-  ui::radar::formatCurrentRing3Label(label, sizeof(label));
-  Serial.printf("Range: %s\n", label);
-  ui::radarDisplayDraw();
+  ui::wifi_screen::openScan(/*cancelable=*/true);  // replaces the radar screen
 }
 
 // Network work runs on its own task (core 0) so HTTP never blocks the UI:
-// the one-time IP location lookup, then ADS-B polling. One connection at a
-// time keeps peak RAM down.
-void adsbFetchTask(void*) {
+// the one-time IP location lookup, ADS-B polling, and route lookups for the
+// selected plane. One connection at a time keeps peak RAM down. A route
+// request wakes the task early (task notification) so it is answered quickly.
+void networkTask(void*) {
   bool ip_tried = false;
   unsigned long ip_last_try_ms = 0;
+  unsigned long last_fetch_ms = 0;
+  bool fetched_once = false;
   for (;;) {
     if (services::wifi::connected()) {
       if (!services::location::isSet() &&
@@ -99,11 +53,26 @@ void adsbFetchTask(void*) {
           services::location::save(lat, lon);
         }
       }
-      services::adsb::fetchUpdate(services::location::lat(),
-                                  services::location::lon(),
-                                  ui::radar::fetchRadiusKm());
+      services::route::process();
+      if (!fetched_once ||
+          millis() - last_fetch_ms >= config::kAdsbFetchIntervalMs) {
+        fetched_once = true;
+        last_fetch_ms = millis();
+        services::adsb::fetchUpdate(services::location::lat(),
+                                    services::location::lon(),
+                                    ui::radar::fetchRadiusKm());
+      }
     }
-    vTaskDelay(pdMS_TO_TICKS(config::kAdsbFetchIntervalMs));
+    // Sleep until the next ADS-B fetch is due (or a route request arrives).
+    // Before Wi-Fi is up, just check back every second.
+    const unsigned long since = millis() - last_fetch_ms;
+    unsigned long wait_ms = 1000;
+    if (fetched_once) {
+      wait_ms = since >= config::kAdsbFetchIntervalMs
+                    ? 1
+                    : config::kAdsbFetchIntervalMs - since;
+    }
+    ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(wait_ms));
   }
 }
 
@@ -130,34 +99,29 @@ void setup() {
   } else {
     ui::wifi_screen::openScan(/*cancelable=*/false);
   }
-  g_mode = Mode::Settings;
 
   // Core 0, away from the UI loop on core 1.
-  xTaskCreatePinnedToCore(adsbFetchTask, "adsb", 16384, nullptr, 1, nullptr, 0);
+  TaskHandle_t network_task = nullptr;
+  xTaskCreatePinnedToCore(networkTask, "net", 16384, nullptr, 1, &network_task, 0);
+  services::route::init(network_task);
 }
 
 void loop() {
   services::wifi::loop();
   const auto button = hardware::boot_button::poll();
 
-  if (g_mode == Mode::Settings) {
+  if (ui::wifi_screen::isOpen()) {
     ui::wifi_screen::update();
     if (!ui::wifi_screen::isOpen()) {
-      showRadar();
-    } else {
-      ui::lvgl_port::handle();
+      ui::radar_screen::open();
     }
-  } else {
-    if (button == hardware::boot_button::Event::Hold || radarLongPress()) {
-      openWifiSettings();
-    } else if (button == hardware::boot_button::Event::Tap) {
-      onRangeTap();
-      g_last_redraw_ms = millis();
-    } else if (millis() - g_last_redraw_ms >= config::kRadarRedrawIntervalMs) {
-      g_last_redraw_ms = millis();
-      ui::radarDisplayRefreshAircraft();
-    }
+  } else if (button == hardware::boot_button::Event::Hold ||
+             ui::radar_screen::takeSettingsRequest()) {
+    openWifiSettings();
+  } else if (button == hardware::boot_button::Event::Tap) {
+    ui::radar_screen::nextRange();
   }
 
+  ui::lvgl_port::handle();
   delay(5);
 }

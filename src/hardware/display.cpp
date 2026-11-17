@@ -2,7 +2,7 @@
 
 #include <Arduino.h>
 
-#include "hardware/display_font.h"
+#include "config.h"
 
 LGFX tft;
 
@@ -23,6 +23,4 @@ void displayInit() {
   tft.init();
   tft.setRotation(config::kDisplayRotation);
   tft.setBrightness(config::kDisplayBrightness);
-  tft.setTextWrap(false);
-  displayFontInit();
 }

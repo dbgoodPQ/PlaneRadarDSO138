@@ -18,6 +18,10 @@ constexpr int kBufferLines = 40;
 lv_display_t* s_display = nullptr;
 lv_indev_t* s_touch = nullptr;
 bool s_ignore_touch = false;
+int16_t s_last_x = 0;
+int16_t s_last_y = 0;
+uint32_t s_last_pressed_ms = 0;
+bool s_was_pressed = false;
 
 uint32_t tickMs() { return millis(); }
 
@@ -37,7 +41,23 @@ void flush(lv_display_t* display, const lv_area_t* area, uint8_t* px_map) {
 void readTouch(lv_indev_t*, lv_indev_data_t* data) {
   int16_t x;
   int16_t y;
-  const bool pressed = hardware::touch::read(&x, &y);
+  bool pressed = hardware::touch::read(&x, &y);
+  const uint32_t now = millis();
+  if (pressed) {
+    s_last_x = x;
+    s_last_y = y;
+    s_last_pressed_ms = now;
+    s_was_pressed = true;
+  } else if (s_was_pressed &&
+             now - s_last_pressed_ms < config::kTouchDropoutMs) {
+    // Resistive panels drop out briefly under a steady finger: bridge the gap
+    // at the last point so a long press isn't broken into several taps.
+    pressed = true;
+    x = s_last_x;
+    y = s_last_y;
+  } else {
+    s_was_pressed = false;
+  }
   if (s_ignore_touch) {
     if (!pressed) {
       s_ignore_touch = false;
@@ -87,11 +107,6 @@ void init() {
 }
 
 void handle() { lv_timer_handler(); }
-
-void resume() {
-  lv_obj_invalidate(lv_screen_active());
-  lv_refr_now(s_display);
-}
 
 void ignoreTouchUntilRelease() { s_ignore_touch = true; }
 

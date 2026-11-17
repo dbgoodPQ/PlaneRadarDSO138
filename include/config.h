@@ -17,6 +17,8 @@ constexpr int kWifiMaxListedNetworks = 15;
 // --- Settings access (until the gear button exists) ---
 /** Hold a finger on the radar this long to open Wi-Fi settings. */
 constexpr unsigned long kSettingsLongPressMs = 2000UL;
+/** Touch dropouts shorter than this don't count as a release (resistive panel). */
+constexpr unsigned long kTouchDropoutMs = 150UL;
 
 // --- BOOT button (active LOW) ---
 // CYD: GPIO 0. Tap = next range, hold = open Wi-Fi settings.
@@ -60,12 +62,6 @@ constexpr unsigned long kTouchRecalibrateHoldMs = 3000UL;
 constexpr int kLedPinRed = 4;
 constexpr int kLedPinGreen = 16;
 constexpr int kLedPinBlue = 17;
-
-/** Legacy sprite radar: a square 240x240 frame centered on the 320x240 panel.
- *  Temporary until the LVGL radar (phase 3) moves it into the left 2/3. */
-constexpr int kRadarFrameSize = 240;
-constexpr int kRadarOriginX = (kDisplayWidth - kRadarFrameSize) / 2;
-constexpr int kRadarOriginY = (kDisplayHeight - kRadarFrameSize) / 2;
 
 // --- Radar center defaults (until a location is saved) ---
 constexpr double kDefaultRadarLat = 52.3676;

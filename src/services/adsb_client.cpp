@@ -232,12 +232,14 @@ void formatAltitudeTag(const JsonObject& plane, char* out, size_t out_len) {
 }
 
 void fillTagFields(Aircraft* ac, const JsonObject& plane) {
+  copyJsonStringTrimmed(plane, "hex", ac->hex, sizeof(ac->hex));
   copyJsonStringTrimmed(plane, "flight", ac->callsign, sizeof(ac->callsign));
   if (ac->callsign[0] == '\0') {
     copyJsonStringTrimmed(plane, "hex", ac->callsign, sizeof(ac->callsign));
   }
 
   copyJsonStringTrimmed(plane, "t", ac->type, sizeof(ac->type));
+  copyJsonStringTrimmed(plane, "desc", ac->desc, sizeof(ac->desc));
   formatAltitudeTag(plane, ac->alt, sizeof(ac->alt));
 }
 
@@ -292,7 +294,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   for (const char* key :
        {"lat", "lon", "true_heading", "mag_heading", "track", "dir", "gs",
         "tas", "ias", "alt_baro", "alt_geom", "seen_pos", "flight", "hex", "t",
-        "category"}) {
+        "category", "desc"}) {
     f[key] = true;
   }
 
@@ -356,7 +358,9 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
 
   // Parse into a local buffer, then publish atomically so a reader on another
   // thread never sees a half-updated list.
-  Aircraft parsed[kMaxAircraft];
+  // Static: ~6 KB is too much for the fetch task's stack (only that task
+  // calls fetchUpdate()).
+  static Aircraft parsed[kMaxAircraft];
   size_t n = 0;
   JsonArray ac = doc["ac"].as<JsonArray>();
   if (!ac.isNull()) {

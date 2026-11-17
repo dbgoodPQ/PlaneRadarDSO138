@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 
 namespace services::adsb {
 
@@ -15,10 +16,20 @@ struct Aircraft {
    *  Added to the elapsed time when dead-reckoning so the drawn position
    *  reflects the estimated current location, not the already-stale fix. */
   uint32_t pos_age_ms;
+  /** Flight number, or the ICAO hex when the feed has none. */
   char callsign[9];
+  /** ICAO 24-bit address, e.g. "4841ad" ("~" prefix for TIS-B). Stable ID. */
+  char hex[8];
   char type[5];
   char alt[12];
+  /** Full aircraft name, e.g. "BOEING 737-800" (may be empty). */
+  char desc[34];
 };
+
+/** True when `callsign` is a real flight number (not the hex fallback). */
+inline bool hasFlightNumber(const Aircraft& a) {
+  return a.callsign[0] != 0 && std::strcmp(a.callsign, a.hex) != 0;
+}
 
 constexpr size_t kMaxAircraft = 64;
 
