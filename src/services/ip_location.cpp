@@ -5,6 +5,8 @@
 #include <HTTPClient.h>
 #include <WiFiClient.h>
 
+#include <cstring>
+
 namespace services::ip_location {
 
 namespace {
@@ -16,7 +18,7 @@ constexpr int kTimeoutMs = 5000;
 
 }  // namespace
 
-bool lookup(double* lat, double* lon) {
+bool lookup(double* lat, double* lon, char* city, size_t city_len) {
   WiFiClient client;
   HTTPClient http;
   http.setConnectTimeout(kTimeoutMs);
@@ -45,6 +47,10 @@ bool lookup(double* lat, double* lon) {
   }
   *lat = doc["lat"].as<double>();
   *lon = doc["lon"].as<double>();
+  if (city_len > 0) {
+    strncpy(city, doc["city"] | "", city_len - 1);
+    city[city_len - 1] = '\0';
+  }
   Serial.printf("IP location: %s (%.4f, %.4f)\n", doc["city"] | "?", *lat, *lon);
   return true;
 }

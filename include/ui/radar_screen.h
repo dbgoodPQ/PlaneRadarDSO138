@@ -6,8 +6,8 @@
  * through its partial buffer, so no full-frame buffer is needed.
  *
  * Tap a plane = select it (tap empty space to deselect). Tap the range
- * indicator (top right of the radar) = next range. Hold the radar for
- * config::kSettingsLongPressMs = settings request (see takeSettingsRequest()).
+ * indicator (top right of the radar) = next range. The gear button (top-left
+ * corner) = settings request (see takeSettingsRequest()).
  */
 namespace ui::radar_screen {
 
@@ -20,7 +20,7 @@ bool isOpen();
 /** Cycle to the next range preset and redraw. */
 void nextRange();
 
-/** True once after the user held a finger on the radar long enough. */
+/** True once after the gear button was tapped. */
 bool takeSettingsRequest();
 
 }  // namespace ui::radar_screen

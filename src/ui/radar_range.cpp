@@ -1,74 +1,27 @@
 #include "ui/radar_range.h"
 
-#include "ui/radar_theme.h"
-
-#include <Preferences.h>
 #include <cmath>
 #include <cstdio>
-#include <cstring>
+
+#include "services/settings.h"
+#include "ui/radar_theme.h"
 
 namespace ui::radar {
 
 namespace {
 
-constexpr char kPrefsNamespace[] = "planeradar";
-constexpr char kPrefsRangeKey[] = "rangeIdx";
-constexpr char kPrefsMilesKey[] = "useMiles";
-constexpr char kPrefsRunwaysKey[] = "showRwys";
-constexpr uint8_t kDefaultRangeIndex = 1;  // 10 km ring
 constexpr float kKmPerMile = 1.609344f;
-
-Preferences s_prefs;
-uint8_t s_range_index = kDefaultRangeIndex;
-bool s_use_miles = false;
-bool s_show_runways = true;
-
-void saveRangeIndex() {
-  if (!s_prefs.begin(kPrefsNamespace, false)) {
-    return;
-  }
-  s_prefs.putUChar(kPrefsRangeKey, s_range_index);
-  s_prefs.end();
-}
-
-void saveUseMiles() {
-  if (!s_prefs.begin(kPrefsNamespace, false)) {
-    return;
-  }
-  s_prefs.putBool(kPrefsMilesKey, s_use_miles);
-  s_prefs.end();
-}
-
-void saveShowRunways() {
-  if (!s_prefs.begin(kPrefsNamespace, false)) {
-    return;
-  }
-  s_prefs.putBool(kPrefsRunwaysKey, s_show_runways);
-  s_prefs.end();
-}
 
 }  // namespace
 
-void rangeInit() {
-  if (!s_prefs.begin(kPrefsNamespace, true)) {
-    return;
-  }
-  const uint8_t saved = s_prefs.getUChar(kPrefsRangeKey, kDefaultRangeIndex);
-  s_range_index =
-      (saved < kRangePresetCount) ? saved : kDefaultRangeIndex;
-  s_use_miles = s_prefs.getBool(kPrefsMilesKey, false);
-  s_show_runways = s_prefs.getBool(kPrefsRunwaysKey, true);
-  s_prefs.end();
-}
-
 void rangeNext() {
-  s_range_index = static_cast<uint8_t>((s_range_index + 1) % kRangePresetCount);
-  saveRangeIndex();
+  services::settings::setRangeIndex(static_cast<uint8_t>(
+      (services::settings::rangeIndex() + 1) % kRangePresetCount));
 }
 
-const RangePreset& rangeCurrent() { return kRangePresets[s_range_index]; }
-
-uint8_t rangeIndex() { return s_range_index; }
+const RangePreset& rangeCurrent() {
+  return kRangePresets[services::settings::rangeIndex()];
+}
 
 float fetchRadiusKm() {
   const float outer_km = rangeCurrent().outer_km;
@@ -76,21 +29,9 @@ float fetchRadiusKm() {
   return outer_km * (screen_r_px / static_cast<float>(kGridOuterRadius));
 }
 
-bool useMiles() { return s_use_miles; }
+bool useMiles() { return services::settings::useMiles(); }
 
-bool showRunways() { return s_show_runways; }
-
-void setUseMiles(bool use_miles) {
-  s_use_miles = use_miles;
-  saveUseMiles();
-  Serial.printf("Distance units: %s\n", s_use_miles ? "miles" : "km");
-}
-
-void setShowRunways(bool show) {
-  s_show_runways = show;
-  saveShowRunways();
-  Serial.printf("Runway overlay: %s\n", s_show_runways ? "on" : "off");
-}
+bool showRunways() { return services::settings::showRunways(); }
 
 void formatRing3Label(char* buf, size_t len, float ring3_km, bool use_miles) {
   if (use_miles) {
@@ -103,7 +44,7 @@ void formatRing3Label(char* buf, size_t len, float ring3_km, bool use_miles) {
 }
 
 void formatCurrentRing3Label(char* buf, size_t len) {
-  formatRing3Label(buf, len, rangeCurrent().ring3_km, s_use_miles);
+  formatRing3Label(buf, len, rangeCurrent().ring3_km, useMiles());
 }
 
 }  // namespace ui::radar

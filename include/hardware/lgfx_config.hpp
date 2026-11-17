@@ -4,11 +4,12 @@
 #include <LovyanGFX.hpp>
 
 #include "config.h"
+#include "hardware/xpt2046_soft.hpp"
 
 /**
  * LovyanGFX device for the ESP32-2432S028R (CYD, original 1-USB version):
  *  - ILI9341 320x240 on HSPI (SPI2_HOST) with DMA
- *  - XPT2046 resistive touch on its own VSPI bus (SPI3_HOST)
+ *  - XPT2046 resistive touch over software SPI (VSPI is left to the microSD)
  *  - PWM backlight on GPIO 21
  * All pins come from config.h.
  */
@@ -16,7 +17,7 @@ class LGFX : public lgfx::LGFX_Device {
   lgfx::Panel_ILI9341 _panel;
   lgfx::Bus_SPI _bus;
   lgfx::Light_PWM _light;
-  lgfx::Touch_XPT2046 _touch;
+  hardware::Touch_XPT2046_Soft _touch;
 
  public:
   LGFX() {
@@ -72,8 +73,6 @@ class LGFX : public lgfx::LGFX_Device {
       cfg.pin_int = config::kTouchPinIrq;
       cfg.bus_shared = false;
       cfg.offset_rotation = 0;
-      cfg.spi_host = SPI3_HOST;  // VSPI
-      cfg.freq = config::kTouchSpiHz;
       cfg.pin_sclk = config::kTouchPinSclk;
       cfg.pin_mosi = config::kTouchPinMosi;
       cfg.pin_miso = config::kTouchPinMiso;

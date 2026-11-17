@@ -12,6 +12,7 @@
 
 #include "config.h"
 #include "services/http_body_framing.h"
+#include "services/settings.h"
 
 namespace services::adsb {
 
@@ -49,22 +50,15 @@ void pollNetwork() {
   }
 }
 
+/**
+ * One GET attempt. No retry here: a failed connect is usually a failed TLS
+ * setup (heap too fragmented), and hammering it only churns the heap more.
+ * The next fetch cycle tries again.
+ */
 int performGetWithPoll(HTTPClient& http) {
   http.setConnectTimeout(kConnectTimeoutMs);
-  const unsigned long deadline = millis() + kRequestTimeoutMs;
-  while (millis() < deadline) {
-    pollNetwork();
-    const int code = http.GET();
-    if (code > 0) {
-      return code;
-    }
-    if (code != HTTPC_ERROR_CONNECTION_REFUSED &&
-        code != HTTPC_ERROR_NOT_CONNECTED) {
-      return code;
-    }
-    delay(5);
-  }
-  return HTTPC_ERROR_READ_TIMEOUT;
+  pollNetwork();
+  return http.GET();
 }
 
 /**
@@ -253,6 +247,17 @@ void init() {
 
 void setPollFn(PollFn fn) { s_poll_fn = fn; }
 
+void clear() {
+  if (s_mutex != nullptr) {
+    xSemaphoreTake(s_mutex, portMAX_DELAY);
+  }
+  s_aircraft_count = 0;
+  s_last_update_ms = 0;
+  if (s_mutex != nullptr) {
+    xSemaphoreGive(s_mutex);
+  }
+}
+
 size_t aircraftCount() { return s_aircraft_count; }
 
 const Aircraft* aircraftList() { return s_aircraft; }
@@ -371,7 +376,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
       if (!plane["lat"].is<float>() || !plane["lon"].is<float>()) {
         continue;
       }
-      if (isOnGround(plane) && !config::kAdsbShowGroundAircraft) {
+      if (isOnGround(plane) && !services::settings::showGroundAircraft()) {
         continue;
       }
 

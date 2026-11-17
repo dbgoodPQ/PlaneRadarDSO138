@@ -3,6 +3,7 @@
 #include <cmath>
 #include <cstdio>
 #include <cstring>
+#include <initializer_list>
 
 #include "services/route_lookup.h"
 #include "ui/radar_fonts.h"
@@ -42,6 +43,13 @@ lv_obj_t* makeLabel(lv_obj_t* parent, const lv_font_t* font, uint32_t rgb,
     lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
   }
   return label;
+}
+
+/** Cap a wrapping label at `lines` lines, ending in "..." when cut. */
+void limitLines(lv_obj_t* label, int lines) {
+  const lv_font_t* font = lv_obj_get_style_text_font(label, 0);
+  lv_obj_set_style_max_height(label, lv_font_get_line_height(font) * lines, 0);
+  lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
 }
 
 lv_obj_t* makeColumn(lv_obj_t* parent) {
@@ -155,6 +163,10 @@ void create(lv_obj_t* screen) {
   s_airline = makeLabel(s_details, radar::fontSmall(), radar::kColorPanelText, true);
   s_from = makeLabel(s_details, radar::fontSmall(), radar::kColorRunwayLabel, true);
   s_to = makeLabel(s_details, radar::fontSmall(), radar::kColorRunwayLabel, true);
+  // Long names stop at two lines ("...") so the value rows always fit.
+  for (lv_obj_t* l : {s_desc, s_airline, s_to}) {
+    limitLines(l, 2);
+  }
 
   lv_obj_t* sep = lv_obj_create(s_details);
   lv_obj_remove_style_all(sep);

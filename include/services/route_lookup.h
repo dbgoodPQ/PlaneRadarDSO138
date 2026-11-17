@@ -1,8 +1,5 @@
 #pragma once
 
-#include <freertos/FreeRTOS.h>
-#include <freertos/task.h>
-
 /**
  * Airline and route for one flight number, from api.adsbdb.com.
  *
@@ -21,8 +18,8 @@ struct Info {
 
 enum class Status { None, Pending, Found, NotFound, Failed };
 
-/** Create the lock. `network_task` is woken when a lookup is requested. */
-void init(TaskHandle_t network_task);
+/** Create the lock. Call once at boot, before the network task starts. */
+void init();
 
 /**
  * Ask for the route of `callsign` (UI task). No-op if it is already known or

@@ -54,6 +54,9 @@ const Aircraft* aircraftList();
  */
 unsigned long lastUpdateMs();
 
+/** Drop all aircraft (e.g. the radar moved); the next fetch refills. */
+void clear();
+
 /** Hook invoked during long HTTP I/O (e.g. wifiLoop). Optional. */
 using PollFn = void (*)();
 void setPollFn(PollFn fn);

@@ -76,6 +76,9 @@ constexpr unsigned long kSelectLostClearMs = 10000;
 /** Detail panel: the right 1/3 of the panel. */
 constexpr int kPanelX = kAreaWidth;
 constexpr int kPanelWidth = config::kDisplayWidth - kAreaWidth;  // 106
+/** Settings (gear) button, top-left corner of the radar area. */
+constexpr int kGearButtonSize = 40;
+constexpr int kGearMarginPx = 4;
 
 /** Palette (24-bit RGB; LVGL converts to RGB565). */
 constexpr uint32_t kColorBackground = 0x040A1C;

@@ -10,6 +10,8 @@
 #include <cctype>
 #include <cstring>
 
+#include "services/network_task.h"
+
 namespace services::route {
 
 namespace {
@@ -20,7 +22,6 @@ constexpr int kTimeoutMs = 6000;
 constexpr unsigned long kRetryAfterMs = 30000;
 
 SemaphoreHandle_t s_mutex = nullptr;
-TaskHandle_t s_network_task = nullptr;
 
 // Guarded by s_mutex.
 char s_callsign[9] = "";
@@ -66,6 +67,7 @@ void copyAirport(const JsonObject& airport, char* code, size_t code_len,
 
 /** Blocking HTTPS GET; fills `info`. Returns Found, NotFound or Failed. */
 Status fetch(const char* callsign, Info* info) {
+  services::network_task::logHeap("route");
   String url = kApiBase;
   url += callsign;
 
@@ -124,11 +126,10 @@ Status fetch(const char* callsign, Info* info) {
 
 }  // namespace
 
-void init(TaskHandle_t network_task) {
+void init() {
   if (s_mutex == nullptr) {
     s_mutex = xSemaphoreCreateMutex();
   }
-  s_network_task = network_task;
 }
 
 void request(const char* callsign) {
@@ -149,9 +150,7 @@ void request(const char* callsign) {
     }
     s_status = Status::Pending;
   }
-  if (s_network_task != nullptr) {
-    xTaskNotifyGive(s_network_task);
-  }
+  services::network_task::wake();
 }
 
 Status get(const char* callsign, Info* out) {

@@ -76,8 +76,6 @@ lv_obj_t* s_screen = nullptr;
 lv_obj_t* s_radar = nullptr;
 lv_timer_t* s_timer = nullptr;
 
-uint32_t s_press_start_ms = 0;
-bool s_long_press_fired = false;
 bool s_settings_requested = false;
 
 /**
@@ -447,37 +445,18 @@ void selectAt(int x, int y) {
   refresh();
 }
 
-void onRadarInput(lv_event_t* e) {
-  switch (lv_event_get_code(e)) {
-    case LV_EVENT_PRESSED:
-      s_press_start_ms = lv_tick_get();
-      s_long_press_fired = false;
-      break;
-    case LV_EVENT_PRESSING:
-      if (!s_long_press_fired &&
-          lv_tick_elaps(s_press_start_ms) >= config::kSettingsLongPressMs) {
-        s_long_press_fired = true;
-        // Handled from loop(): opening settings deletes this screen.
-        s_settings_requested = true;
-      }
-      break;
-    case LV_EVENT_CLICKED: {
-      if (s_long_press_fired) {
-        break;
-      }
-      lv_point_t p;
-      lv_indev_get_point(lv_indev_active(), &p);
-      lv_area_t coords;
-      lv_obj_get_coords(s_radar, &coords);
-      selectAt(p.x - coords.x1, p.y - coords.y1);
-      break;
-    }
-    default:
-      break;
-  }
+void onRadarClicked(lv_event_t*) {
+  lv_point_t p;
+  lv_indev_get_point(lv_indev_active(), &p);
+  lv_area_t coords;
+  lv_obj_get_coords(s_radar, &coords);
+  selectAt(p.x - coords.x1, p.y - coords.y1);
 }
 
 void onRangeClicked(lv_event_t*) { nextRange(); }
+
+// Handled from loop(): opening settings deletes this screen.
+void onGearClicked(lv_event_t*) { s_settings_requested = true; }
 
 void onTimer(lv_timer_t*) { refresh(); }
 
@@ -511,7 +490,7 @@ void open() {
   lv_obj_remove_flag(s_radar, LV_OBJ_FLAG_SCROLLABLE);
   lv_obj_add_flag(s_radar, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(s_radar, onDraw, LV_EVENT_DRAW_MAIN, nullptr);
-  lv_obj_add_event_cb(s_radar, onRadarInput, LV_EVENT_ALL, nullptr);
+  lv_obj_add_event_cb(s_radar, onRadarClicked, LV_EVENT_CLICKED, nullptr);
 
   // Invisible touch target over the range indicator (drawn by onDraw).
   lv_obj_t* range_btn = lv_obj_create(s_radar);
@@ -524,8 +503,22 @@ void open() {
 
   detail_panel::create(s_screen);
 
-  s_press_start_ms = 0;
-  s_long_press_fired = false;
+  // Settings button, top-left corner of the radar area (on top of the radar,
+  // so taps on it never select a plane).
+  lv_obj_t* gear = lv_button_create(s_screen);
+  lv_obj_set_size(gear, radar::kGearButtonSize, radar::kGearButtonSize);
+  lv_obj_set_pos(gear, radar::kGearMarginPx, radar::kGearMarginPx);
+  lv_obj_set_style_bg_color(gear, lv_color_hex(0x1C2630), 0);
+  lv_obj_set_style_bg_opa(gear, LV_OPA_80, 0);
+  lv_obj_set_style_shadow_width(gear, 0, 0);
+  lv_obj_set_style_radius(gear, 8, 0);
+  lv_obj_set_ext_click_area(gear, 6);
+  lv_obj_add_event_cb(gear, onGearClicked, LV_EVENT_CLICKED, nullptr);
+  lv_obj_t* icon = lv_label_create(gear);
+  lv_label_set_text(icon, LV_SYMBOL_SETTINGS);
+  lv_obj_set_style_text_font(icon, &lv_font_montserrat_20, 0);
+  lv_obj_center(icon);
+
   s_settings_requested = false;
 
   refresh();

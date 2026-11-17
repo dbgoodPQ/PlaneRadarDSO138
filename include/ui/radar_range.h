@@ -8,7 +8,7 @@ namespace ui::radar {
 /**
  * Range presets (label on ring 3 = ¾ of outer radius).
  *
- * Recommended for ADS-B on a 1.28″ display:
+ * Presets:
  *   5 km  — pattern / very local (airfield vicinity)
  *  10 km  — default; neighborhood spotting
  *  15 km  — wider local area
@@ -36,20 +36,15 @@ constexpr RangePreset kRangePresets[] = {
 constexpr size_t kRangePresetCount =
     sizeof(kRangePresets) / sizeof(kRangePresets[0]);
 
-/** Load saved range and distance units from flash. Call once after boot. */
-void rangeInit();
-/** Cycle preset and save to flash. */
+/** Cycle to the next preset (saved via services::settings). */
 void rangeNext();
 const RangePreset& rangeCurrent();
-uint8_t rangeIndex();
 /** ADSB fetch radius (km): scaled to screen edge so beyond-ring dots have data. */
 float fetchRadiusKm();
 
+/** Shortcuts to services::settings. */
 bool useMiles();
 bool showRunways();
-/** Persisted display options (Settings screen, phase 5). */
-void setUseMiles(bool use_miles);
-void setShowRunways(bool show);
 void formatRing3Label(char* buf, size_t len, float ring3_km, bool use_miles);
 void formatCurrentRing3Label(char* buf, size_t len);
 

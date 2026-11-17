@@ -14,14 +14,12 @@ constexpr unsigned long kWifiReconnectIntervalMs = 15000;
 /** Most networks listed on the Wi-Fi screen (strongest first). */
 constexpr int kWifiMaxListedNetworks = 15;
 
-// --- Settings access (until the gear button exists) ---
-/** Hold a finger on the radar this long to open Wi-Fi settings. */
-constexpr unsigned long kSettingsLongPressMs = 2000UL;
+// --- Touch ---
 /** Touch dropouts shorter than this don't count as a release (resistive panel). */
 constexpr unsigned long kTouchDropoutMs = 150UL;
 
 // --- BOOT button (active LOW) ---
-// CYD: GPIO 0. Tap = next range, hold = open Wi-Fi settings.
+// CYD: GPIO 0. Tap = next range, hold = open Settings.
 constexpr gpio_num_t kBootPin = GPIO_NUM_0;
 constexpr unsigned long kBootHoldMs = 3000UL;
 /** Ignore BOOT taps shorter than this (debounce). */
@@ -46,17 +44,24 @@ constexpr uint32_t kDisplaySpiWriteHz = 40000000;
 constexpr uint32_t kDisplaySpiReadHz = 16000000;
 constexpr bool kDisplayInvert = false;
 constexpr bool kDisplayRgbOrder = false;
-constexpr uint8_t kDisplayBrightness = 255;  // fixed, 0-255
+/** Backlight at boot, before the saved brightness setting is applied. */
+constexpr uint8_t kDisplayBrightness = 255;
 
-// --- Touch: XPT2046 on its own SPI bus (VSPI) ---
+// --- Touch: XPT2046 over software SPI (bit-banged) ---
 constexpr int kTouchPinSclk = 25;
 constexpr int kTouchPinMosi = 32;
 constexpr int kTouchPinMiso = 39;
 constexpr int kTouchPinCs = 33;
 constexpr int kTouchPinIrq = 36;
-constexpr uint32_t kTouchSpiHz = 1000000;
 /** Hold a finger on the screen this long during power-up to redo calibration. */
 constexpr unsigned long kTouchRecalibrateHoldMs = 3000UL;
+
+// --- microSD slot: VSPI (touch is bit-banged, so VSPI is free) ---
+constexpr int kSdPinSclk = 18;
+constexpr int kSdPinMiso = 19;
+constexpr int kSdPinMosi = 23;
+constexpr int kSdPinCs = 5;
+constexpr uint32_t kSdSpiHz = 20000000;
 
 // --- On-board RGB LED (active LOW) — kept off ---
 constexpr int kLedPinRed = 4;
@@ -74,7 +79,5 @@ constexpr unsigned long kAdsbFetchIntervalMs = 5000;
 constexpr unsigned long kRadarRedrawIntervalMs = 2000;
 /** Legacy scale unused — fetch uses radar::fetchRadiusKm() to screen edge. */
 constexpr float kAdsbFetchRadiusScale = 1.0f;
-/** false = hide aircraft with alt_baro "ground"; true = show them too. */
-constexpr bool kAdsbShowGroundAircraft = false;
 
 }  // namespace config

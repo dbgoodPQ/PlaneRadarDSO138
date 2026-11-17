@@ -12,8 +12,9 @@ namespace ui::lvgl_port {
 
 namespace {
 
-/** Partial render buffer: 40 lines (25.6 KB), DMA-capable internal RAM. */
-constexpr int kBufferLines = 40;
+/** Partial render buffer: 20 lines (12.8 KB), DMA-capable internal RAM.
+ *  Halved from 40 to leave the heap room for TLS. */
+constexpr int kBufferLines = 20;
 
 lv_display_t* s_display = nullptr;
 lv_indev_t* s_touch = nullptr;

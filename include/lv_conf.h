@@ -8,9 +8,9 @@
 /* ---- Color ---- */
 #define LV_COLOR_DEPTH 16
 
-/* ---- Memory: use the ESP32 heap instead of a fixed static pool, so LVGL
- *      only takes what the current screen needs. ---- */
-#define LV_USE_STDLIB_MALLOC LV_STDLIB_CLIB
+/* ---- Memory: the ESP32 heap through counting hooks (src/ui/lvgl_mem.cpp),
+ *      so LVGL's share of the heap shows in the heap log. ---- */
+#define LV_USE_STDLIB_MALLOC LV_STDLIB_CUSTOM
 #define LV_USE_STDLIB_STRING LV_STDLIB_CLIB
 #define LV_USE_STDLIB_SPRINTF LV_STDLIB_CLIB
 
