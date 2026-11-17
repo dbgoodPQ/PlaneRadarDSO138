@@ -6,7 +6,8 @@ namespace ui::runway {
 
 /**
  * Recompute the large-airport runway segments and labels for the current
- * location and range. Call before invalidating the radar (not per draw).
+ * location and range. Only needed when the range, location or runway setting
+ * changes (the radar screen tracks that); not per draw.
  */
 void update();
 

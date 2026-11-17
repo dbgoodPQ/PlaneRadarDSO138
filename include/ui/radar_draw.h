@@ -13,6 +13,22 @@ namespace ui::radar::draw {
 enum class HAlign : uint8_t { Left, Center, Right };
 enum class VAlign : uint8_t { Top, Middle, Bottom };
 
+/** True if the two areas share at least one pixel. */
+inline bool overlaps(const lv_area_t& a, const lv_area_t& b) {
+  return a.x1 <= b.x2 && b.x1 <= a.x2 && a.y1 <= b.y2 && b.y1 <= a.y2;
+}
+
+/** Smallest area containing both. */
+inline lv_area_t joined(const lv_area_t& a, const lv_area_t& b) {
+  return {a.x1 < b.x1 ? a.x1 : b.x1, a.y1 < b.y1 ? a.y1 : b.y1,
+          a.x2 > b.x2 ? a.x2 : b.x2, a.y2 > b.y2 ? a.y2 : b.y2};
+}
+
+/** True if `area` can touch the strip being drawn on `layer`. */
+inline bool onStrip(const lv_layer_t* layer, const lv_area_t& area) {
+  return overlaps(area, layer->_clip_area);
+}
+
 void line(lv_layer_t* layer, int x0, int y0, int x1, int y1, int width,
           uint32_t rgb);
 

@@ -14,6 +14,7 @@ namespace ui::radar {
  *  15 km  — wider local area
  *  20 km  — wider regional picture
  *  25 km  — metro / regional picture
+ *  30 km  — widest; whole metro area
  *
  * Outer radius (for aircraft math) is ring-3 distance ÷ 0.75.
  */
@@ -31,6 +32,7 @@ constexpr RangePreset kRangePresets[] = {
     {15.0f, 15.0f * kRing3ToOuterKm},
     {20.0f, 20.0f * kRing3ToOuterKm},
     {25.0f, 25.0f * kRing3ToOuterKm},
+    {30.0f, 30.0f * kRing3ToOuterKm},
 };
 
 constexpr size_t kRangePresetCount =

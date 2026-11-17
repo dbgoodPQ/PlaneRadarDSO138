@@ -1,9 +1,26 @@
 #include "ui/radar_draw.h"
 
+#include <algorithm>
+#include <cstdlib>
+
 namespace ui::radar::draw {
+
+namespace {
+
+/** False when the box can't touch the strip being drawn: skip the draw call
+ *  (LVGL would still allocate and queue a task for it). */
+bool visible(const lv_layer_t* layer, int x1, int y1, int x2, int y2) {
+  return onStrip(layer, lv_area_t{x1, y1, x2, y2});
+}
+
+}  // namespace
 
 void line(lv_layer_t* layer, int x0, int y0, int x1, int y1, int width,
           uint32_t rgb) {
+  if (!visible(layer, std::min(x0, x1) - width, std::min(y0, y1) - width,
+               std::max(x0, x1) + width, std::max(y0, y1) + width)) {
+    return;
+  }
   lv_draw_line_dsc_t dsc;
   lv_draw_line_dsc_init(&dsc);
   dsc.color = lv_color_hex(rgb);
@@ -17,8 +34,19 @@ void line(lv_layer_t* layer, int x0, int y0, int x1, int y1, int width,
 
 void ring(lv_layer_t* layer, int cx, int cy, int radius, int width,
           uint32_t rgb) {
-  if (radius <= 0) {
+  if (radius <= 0 ||
+      !visible(layer, cx - radius, cy - radius, cx + radius, cy + radius)) {
     return;
+  }
+  // Strip entirely inside the ring's hole: nothing of the ring in it.
+  const lv_area_t& clip = layer->_clip_area;
+  const int hole = radius - width - 1;
+  if (hole > 0) {
+    const int dx = std::max(std::abs(clip.x1 - cx), std::abs(clip.x2 - cx));
+    const int dy = std::max(std::abs(clip.y1 - cy), std::abs(clip.y2 - cy));
+    if (dx * dx + dy * dy < hole * hole) {
+      return;
+    }
   }
   lv_draw_arc_dsc_t dsc;
   lv_draw_arc_dsc_init(&dsc);
@@ -33,6 +61,9 @@ void ring(lv_layer_t* layer, int cx, int cy, int radius, int width,
 }
 
 void fillCircle(lv_layer_t* layer, int cx, int cy, int radius, uint32_t rgb) {
+  if (!visible(layer, cx - radius, cy - radius, cx + radius, cy + radius)) {
+    return;
+  }
   lv_draw_rect_dsc_t dsc;
   lv_draw_rect_dsc_init(&dsc);
   dsc.bg_color = lv_color_hex(rgb);
@@ -43,7 +74,7 @@ void fillCircle(lv_layer_t* layer, int cx, int cy, int radius, uint32_t rgb) {
 }
 
 void fillRect(lv_layer_t* layer, int x, int y, int w, int h, uint32_t rgb) {
-  if (w <= 0 || h <= 0) {
+  if (w <= 0 || h <= 0 || !visible(layer, x, y, x + w - 1, y + h - 1)) {
     return;
   }
   lv_draw_rect_dsc_t dsc;
@@ -56,6 +87,10 @@ void fillRect(lv_layer_t* layer, int x, int y, int w, int h, uint32_t rgb) {
 
 void fillTriangle(lv_layer_t* layer, int x0, int y0, int x1, int y1, int x2,
                   int y2, uint32_t rgb) {
+  if (!visible(layer, std::min({x0, x1, x2}), std::min({y0, y1, y2}),
+               std::max({x0, x1, x2}), std::max({y0, y1, y2}))) {
+    return;
+  }
   lv_draw_triangle_dsc_t dsc;
   lv_draw_triangle_dsc_init(&dsc);
   dsc.bg_color = lv_color_hex(rgb);
@@ -106,6 +141,12 @@ lv_area_t text(lv_layer_t* layer, const char* text, const lv_font_t* font,
   }
   area.x2 = area.x1 + size.x - 1;
   area.y2 = area.y1 + size.y - 1;
+  const int pad_x = std::max(bg_pad_x, 0);
+  const int pad_y = std::max(bg_pad_y, 0);
+  if (!visible(layer, area.x1 - pad_x, area.y1 - pad_y, area.x2 + pad_x,
+               area.y2 + pad_y)) {
+    return area;
+  }
 
   if (bg_pad_x >= 0 && bg_pad_y >= 0) {
     fillRect(layer, area.x1 - bg_pad_x, area.y1 - bg_pad_y,

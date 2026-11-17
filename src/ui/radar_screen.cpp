@@ -10,7 +10,9 @@
 
 #include "config.h"
 #include "services/adsb_client.h"
+#include "services/radar_location.h"
 #include "ui/detail_panel.h"
+#include "ui/perf.h"
 #include "ui/radar_draw.h"
 #include "ui/radar_fonts.h"
 #include "ui/radar_geometry.h"
@@ -30,7 +32,9 @@ constexpr float kDegToRad = 0.01745329252f;
 
 // ---------------------------------------------------------------------------
 // Frame model: computed once per refresh (timer / range change), then drawn by
-// every partial-render strip so all strips show the same positions.
+// every partial-render strip so all strips show the same positions. Only the
+// areas that changed are invalidated; the whole radar is redrawn when the
+// background (range, units, runways, location) changes.
 // ---------------------------------------------------------------------------
 
 struct PlaneItem {
@@ -49,7 +53,11 @@ struct PlaneItem {
   // Tag block: left or right anchor, top line y.
   int16_t tag_x;
   int16_t tag_y;
+  int16_t tag_w;
   bool tag_left_aligned;
+  // Everything drawn for this plane (symbol, vector, tag, selection ring),
+  // radar-area coordinates: the area to redraw when it moves.
+  lv_area_t box;
 };
 
 struct DotItem {
@@ -62,6 +70,34 @@ PlaneItem s_items[services::adsb::kMaxAircraft];
 size_t s_item_count = 0;
 DotItem s_dots[services::adsb::kMaxAircraft];
 size_t s_dot_count = 0;
+
+// What the previous frame drew, to redraw only what changed.
+struct PrevPlane {
+  char hex[sizeof(services::adsb::Aircraft::hex)];
+  lv_area_t box;
+};
+PrevPlane s_prev_planes[services::adsb::kMaxAircraft];
+size_t s_prev_plane_count = 0;
+DotItem s_prev_dots[services::adsb::kMaxAircraft];
+size_t s_prev_dot_count = 0;
+
+/**
+ * Everything the static background (grid, runways, labels) depends on. When it
+ * changes, runways are recomputed and the whole radar is redrawn.
+ */
+struct Background {
+  float outer_km;
+  bool miles;
+  bool runways;
+  double lat;
+  double lon;
+  bool operator==(const Background& o) const {
+    return outer_km == o.outer_km && miles == o.miles && runways == o.runways &&
+           lat == o.lat && lon == o.lon;
+  }
+};
+Background s_background = {-1.0f, false, false, 0.0, 0.0};
+bool s_full_redraw = true;  // next refresh redraws the whole radar
 
 // Selected plane, tracked by ICAO hex across updates (empty = none).
 char s_selected_hex[sizeof(services::adsb::Aircraft::hex)] = "";
@@ -182,6 +218,43 @@ void computeTag(PlaneItem* item, const services::adsb::Aircraft& plane) {
   top = std::max(1, std::min(top, radar::kAreaHeight - block_h - 1));
   item->tag_x = anchor_x;
   item->tag_y = top;
+  item->tag_w = static_cast<int16_t>(block_w);
+}
+
+/** Bounding box of everything drawn for the plane (+ antialiasing margin). */
+void computeBox(PlaneItem* item) {
+  const services::adsb::Aircraft& plane = s_planes[item->index];
+  const int line_h = lv_font_get_line_height(radar::fontSmall());
+  const int ring = radar::kSelectRingRadiusPx + radar::kSelectRingWidthPx;
+  int x1 = item->x - ring;
+  int y1 = item->y - ring;
+  int x2 = item->x + ring;
+  int y2 = item->y + ring;
+  for (int i = 0; i < 3; ++i) {
+    x1 = std::min<int>(x1, item->tx[i]);
+    x2 = std::max<int>(x2, item->tx[i]);
+    y1 = std::min<int>(y1, item->ty[i]);
+    y2 = std::max<int>(y2, item->ty[i]);
+  }
+  x1 = std::min<int>({x1, item->vx0, item->vx1});
+  x2 = std::max<int>({x2, item->vx0, item->vx1});
+  y1 = std::min<int>({y1, item->vy0, item->vy1});
+  y2 = std::max<int>({y2, item->vy0, item->vy1});
+  if (plane.callsign[0] != 0 || plane.type[0] != 0 || plane.alt[0] != 0) {
+    const int tx1 =
+        item->tag_left_aligned ? item->tag_x : item->tag_x - item->tag_w;
+    x1 = std::min(x1, tx1);
+    x2 = std::max(x2, tx1 + item->tag_w);
+    y1 = std::min<int>(y1, item->tag_y);
+    y2 = std::max(y2, item->tag_y + line_h * 3);
+  }
+  constexpr int kPad = 2;
+  item->box = {x1 - kPad, y1 - kPad, x2 + kPad, y2 + kPad};
+}
+
+lv_area_t dotBox(const DotItem& d) {
+  constexpr int r = radar::kBeyondRingDotRadiusPx + 2;
+  return {d.x - r, d.y - r, d.x + r, d.y + r};
 }
 
 /** Rim dot on the true bearing for traffic beyond the outer ring. */
@@ -256,6 +329,7 @@ void computeAircraft() {
     const services::adsb::Aircraft& plane = s_planes[s_items[d].index];
     computeSymbol(&s_items[d], plane);
     computeTag(&s_items[d], plane);
+    computeBox(&s_items[d]);
     if (s_items[d].index == selected_index) {
       s_selected_item = static_cast<int>(d);
     }
@@ -290,12 +364,92 @@ void updatePanel() {
                      s_selected_bearing_deg, !s_selected_seen);
 }
 
+/** Redraw a radar-area rectangle. */
+void invalidateBox(const lv_area_t& box) {
+  lv_area_t coords;
+  lv_obj_get_coords(s_radar, &coords);
+  lv_area_t a = box;
+  lv_area_move(&a, coords.x1, coords.y1);
+  lv_obj_invalidate_area(s_radar, &a);
+}
+
+bool containsDot(const DotItem* dots, size_t n, const DotItem& d) {
+  for (size_t i = 0; i < n; ++i) {
+    if (dots[i].x == d.x && dots[i].y == d.y) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Redraw only what moved: each plane's old and new box (merged into one area,
+ * matched by hex), and the rim dots that appeared or disappeared.
+ */
+void invalidateChanges() {
+  bool prev_used[services::adsb::kMaxAircraft] = {};
+  for (size_t d = 0; d < s_item_count; ++d) {
+    lv_area_t box = s_items[d].box;
+    const char* hex = s_planes[s_items[d].index].hex;
+    for (size_t p = 0; p < s_prev_plane_count; ++p) {
+      if (!prev_used[p] && hex[0] != 0 &&
+          strcmp(s_prev_planes[p].hex, hex) == 0) {
+        prev_used[p] = true;
+        box = radar::draw::joined(box, s_prev_planes[p].box);
+        break;
+      }
+    }
+    invalidateBox(box);
+  }
+  for (size_t p = 0; p < s_prev_plane_count; ++p) {
+    if (!prev_used[p]) {
+      invalidateBox(s_prev_planes[p].box);
+    }
+  }
+  for (size_t i = 0; i < s_dot_count; ++i) {
+    if (!containsDot(s_prev_dots, s_prev_dot_count, s_dots[i])) {
+      invalidateBox(dotBox(s_dots[i]));
+    }
+  }
+  for (size_t i = 0; i < s_prev_dot_count; ++i) {
+    if (!containsDot(s_dots, s_dot_count, s_prev_dots[i])) {
+      invalidateBox(dotBox(s_prev_dots[i]));
+    }
+  }
+}
+
+void rememberFrame() {
+  s_prev_plane_count = s_item_count;
+  for (size_t d = 0; d < s_item_count; ++d) {
+    memcpy(s_prev_planes[d].hex, s_planes[s_items[d].index].hex,
+           sizeof(s_prev_planes[d].hex));
+    s_prev_planes[d].box = s_items[d].box;
+  }
+  s_prev_dot_count = s_dot_count;
+  memcpy(s_prev_dots, s_dots, sizeof(DotItem) * s_dot_count);
+}
+
 void refresh() {
-  runway::update();
+  const uint32_t t0 = micros();
+  const Background bg = {radar::rangeCurrent().outer_km, radar::useMiles(),
+                         radar::showRunways(), services::location::lat(),
+                         services::location::lon()};
+  if (!(bg == s_background)) {
+    s_background = bg;
+    runway::update();
+    s_full_redraw = true;
+  }
   computeAircraft();
   updatePanel();
+  perf::addCompute(micros() - t0);
   if (s_radar != nullptr) {
-    lv_obj_invalidate(s_radar);
+    if (s_full_redraw) {
+      lv_obj_invalidate(s_radar);
+      s_full_redraw = false;
+    } else {
+      invalidateChanges();
+    }
+    rememberFrame();
   }
 }
 
@@ -361,8 +515,18 @@ void drawAircraft(lv_layer_t* layer, int ox, int oy) {
                             radar::kBeyondRingDotRadiusPx, radar::kColorAircraft);
   }
 
+  // Planes whose box misses the strip being drawn are skipped whole.
+  auto onStrip = [&](const PlaneItem& it) {
+    lv_area_t a = it.box;
+    lv_area_move(&a, ox, oy);
+    return radar::draw::onStrip(layer, a);
+  };
+
   for (size_t d = 0; d < s_item_count; ++d) {
     const PlaneItem& it = s_items[d];
+    if (!onStrip(it)) {
+      continue;
+    }
     if (it.vx0 != it.vx1 || it.vy0 != it.vy1) {
       radar::draw::line(layer, ox + it.vx0, oy + it.vy0, ox + it.vx1,
                         oy + it.vy1, radar::kAircraftTrackLineWidth,
@@ -383,6 +547,9 @@ void drawAircraft(lv_layer_t* layer, int ox, int oy) {
   const int line_h = lv_font_get_line_height(font);
   for (size_t d = 0; d < s_item_count; ++d) {
     const PlaneItem& it = s_items[d];
+    if (!onStrip(it)) {
+      continue;
+    }
     const services::adsb::Aircraft& plane = s_planes[it.index];
     const HAlign h = it.tag_left_aligned ? HAlign::Left : HAlign::Right;
     const int x = ox + it.tag_x;
@@ -521,6 +688,7 @@ void open() {
 
   s_settings_requested = false;
 
+  s_full_redraw = true;
   refresh();
   s_timer = lv_timer_create(onTimer, config::kRadarRedrawIntervalMs, nullptr);
 

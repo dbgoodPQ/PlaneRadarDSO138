@@ -116,7 +116,7 @@ void apply(const JsonDocument& doc) {
     if (idx >= 0) {
       st::setRangeIndex(static_cast<uint8_t>(idx), kFromSd);
     } else {
-      Serial.println("SD config: range_km must be 5, 10, 15, 20 or 25");
+      Serial.println("SD config: range_km must be 5, 10, 15, 20, 25 or 30");
     }
   }
   JsonObjectConst loc = doc["location"];

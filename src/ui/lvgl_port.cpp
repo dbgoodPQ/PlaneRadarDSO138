@@ -7,6 +7,7 @@
 #include "config.h"
 #include "hardware/display.h"
 #include "hardware/touch.h"
+#include "ui/perf.h"
 
 namespace ui::lvgl_port {
 
@@ -31,11 +32,13 @@ void flush(lv_display_t* display, const lv_area_t* area, uint8_t* px_map) {
   const int32_t h = lv_area_get_height(area);
   // LVGL renders native little-endian RGB565; rgb565_t tells LovyanGFX so it
   // byte-swaps for the ILI9341.
+  const uint32_t t0 = micros();
   tft.startWrite();
   tft.pushImageDMA(area->x1, area->y1, w, h,
                    reinterpret_cast<const lgfx::rgb565_t*>(px_map));
   tft.waitDMA();  // LVGL reuses the buffer as soon as flush_ready is called
   tft.endWrite();
+  perf::addFlush(static_cast<uint32_t>(w * h), micros() - t0);
   lv_display_flush_ready(display);
 }
 
@@ -92,6 +95,7 @@ void init() {
   lv_display_set_buffers(s_display, buf, nullptr, buf_bytes,
                          LV_DISPLAY_RENDER_MODE_PARTIAL);
   lv_display_set_flush_cb(s_display, flush);
+  perf::attach(s_display);
 
   s_touch = lv_indev_create();
   lv_indev_set_type(s_touch, LV_INDEV_TYPE_POINTER);
@@ -107,7 +111,10 @@ void init() {
   lv_display_set_theme(s_display, theme);
 }
 
-void handle() { lv_timer_handler(); }
+void handle() {
+  lv_timer_handler();
+  perf::logIfDue();
+}
 
 void ignoreTouchUntilRelease() { s_ignore_touch = true; }
 
