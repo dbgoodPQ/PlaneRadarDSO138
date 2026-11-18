@@ -102,7 +102,18 @@ void clear();
 using PollFn = void (*)();
 void setPollFn(PollFn fn);
 
-/** Fetch aircraft within fetch_radius_km of center_lat/lon from adsb.fi. */
-bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km);
+/**
+ * Fetch aircraft within fetch_radius_km of center_lat/lon from adsb.fi, over
+ * a kept-open HTTPS connection (one TLS handshake, then reused). The result
+ * is dropped if the radar location changed since `location_generation`.
+ */
+bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km,
+                 uint32_t location_generation);
+
+/**
+ * Close the kept-open connection (network task). Call before any other HTTPS
+ * request, so only one TLS session ever holds memory.
+ */
+void closeConnection();
 
 }  // namespace services::adsb

@@ -12,6 +12,8 @@
 
 #include "config.h"
 #include "services/http_body_framing.h"
+#include "services/network_task.h"
+#include "services/radar_location.h"
 #include "services/settings.h"
 
 namespace services::adsb {
@@ -37,6 +39,12 @@ bool s_clear_pending = false;  // clear(): the UI's next take returns nothing
 unsigned long s_last_update_ms = 0;
 PollFn s_poll_fn = nullptr;
 SemaphoreHandle_t s_mutex = nullptr;
+
+// Kept-open HTTPS connection (network task only). The TLS handshake briefly
+// needs ~85 KB of heap, so it should happen once, not every fetch.
+WiFiClientSecure s_client;
+HTTPClient s_http;
+bool s_client_ready = false;
 
 void lock() {
   if (s_mutex != nullptr) {
@@ -77,14 +85,24 @@ void pollNetwork() {
 }
 
 /**
- * One GET attempt. No retry here: a failed connect is usually a failed TLS
- * setup (heap too fragmented), and hammering it only churns the heap more.
- * The next fetch cycle tries again.
+ * One GET. A kept-open connection the server has quietly closed fails at
+ * once; that case is retried a single time on a fresh connection. A failed
+ * fresh connect is not retried: it is usually a failed TLS setup (heap too
+ * fragmented), and hammering it only churns the heap more. The next fetch
+ * cycle tries again.
  */
-int performGetWithPoll(HTTPClient& http) {
-  http.setConnectTimeout(kConnectTimeoutMs);
+int performGetWithPoll(HTTPClient& http, const String& url) {
+  const bool reused = s_client.connected();
   pollNetwork();
-  return http.GET();
+  int code = http.GET();
+  if (code < 0 && reused) {
+    Serial.printf("adsb: kept-open connection lost (%d), reconnecting\n", code);
+    s_client.stop();
+    http.begin(s_client, url);
+    pollNetwork();
+    code = http.GET();
+  }
+  return code;
 }
 
 /**
@@ -339,7 +357,18 @@ const Aircraft* takeLatest(size_t* count, unsigned long* out_last_update_ms) {
   return front;
 }
 
-bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
+void closeConnection() {
+  if (s_client_ready && s_client.connected()) {
+    s_http.end();
+    s_client.stop();
+    Serial.println("adsb: connection closed for another request");
+  }
+}
+
+bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km,
+                 uint32_t location_generation) {
+  const uint32_t t_start = millis();
+  services::network_task::traceHeap("adsb:before");
   const float dist_nm = kmToNauticalMiles(fetch_radius_km);
 
   String url = kApiBase;
@@ -359,11 +388,15 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
     f[key] = true;
   }
 
-  WiFiClientSecure client;
-  client.setInsecure();
-
-  HTTPClient http;
-  if (!http.begin(client, url)) {
+  if (!s_client_ready) {
+    s_client.setInsecure();
+    s_http.setReuse(true);
+    s_http.setConnectTimeout(kConnectTimeoutMs);
+    s_client_ready = true;
+  }
+  HTTPClient& http = s_http;
+  const bool was_connected = s_client.connected();
+  if (!http.begin(s_client, url)) {
     Serial.println("adsb: http.begin failed");
     return false;
   }
@@ -374,10 +407,12 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   http.collectHeaders(kWantedHeaders, 1);
 
   http.setTimeout(kRequestTimeoutMs);
-  const int code = performGetWithPoll(http);
+  const int code = performGetWithPoll(http, url);
+  services::network_task::traceHeap("adsb:connect+tls+headers");
   if (code != HTTP_CODE_OK) {
     Serial.printf("adsb: HTTP %d\n", code);
     http.end();
+    s_client.stop();  // start clean next time
     return false;
   }
 
@@ -385,6 +420,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   if (stream == nullptr) {
     Serial.println("adsb: no response stream");
     http.end();
+    s_client.stop();
     return false;
   }
 
@@ -401,11 +437,16 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   JsonDocument doc;
   const DeserializationError err =
       deserializeJson(doc, body, DeserializationOption::Filter(filter));
+  services::network_task::traceHeap("adsb:body+json");
   // Read off the terminating chunk the parser stopped short of, so the socket
-  // sits at the end of the message. Not needed while every fetch builds its own
-  // connection, but a prerequisite for ever reusing one.
+  // sits at the end of the message, ready for the next request.
   body.drain();
-  http.end();
+  const size_t body_bytes = body.bytesRead();
+  http.end();  // keeps the connection open when the server allows it
+  if (err || body.framingError()) {
+    s_client.stop();  // unknown position in the stream: don't reuse it
+  }
+  services::network_task::traceHeap("adsb:close");
   if (err) {
     if (body.framingError()) {
       Serial.println("adsb: malformed chunked body");
@@ -460,8 +501,16 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
     }
   }
 
+  if (services::location::generation() != location_generation) {
+    Serial.println("adsb: location changed during fetch, result dropped");
+    return false;
+  }
   publish(n);
-  Serial.printf("adsb: %u aircraft\n", static_cast<unsigned>(n));
+  services::network_task::traceHeap("adsb:fill");
+  Serial.printf("adsb: %u aircraft, %u bytes, %u ms%s\n", static_cast<unsigned>(n),
+                static_cast<unsigned>(body_bytes),
+                static_cast<unsigned>(millis() - t_start),
+                was_connected ? "" : " (new connection)");
   return true;
 }
 

@@ -26,6 +26,7 @@ double s_lon = config::kDefaultRadarLon;
 bool s_is_set = false;
 char s_name[kNameMaxLen + 1] = "";
 bool s_approximate = false;
+uint32_t s_generation = 0;
 
 void apply(double lat, double lon, bool is_set, const char* name,
            bool approximate) {
@@ -36,6 +37,7 @@ void apply(double lat, double lon, bool is_set, const char* name,
   strncpy(s_name, name != nullptr ? name : "", kNameMaxLen);
   s_name[kNameMaxLen] = '\0';
   s_approximate = approximate;
+  ++s_generation;
   portEXIT_CRITICAL(&s_mux);
 }
 
@@ -83,6 +85,21 @@ double lat() {
 double lon() {
   portENTER_CRITICAL(&s_mux);
   const double v = s_lon;
+  portEXIT_CRITICAL(&s_mux);
+  return v;
+}
+
+void get(double* lat, double* lon, uint32_t* generation) {
+  portENTER_CRITICAL(&s_mux);
+  *lat = s_lat;
+  *lon = s_lon;
+  *generation = s_generation;
+  portEXIT_CRITICAL(&s_mux);
+}
+
+uint32_t generation() {
+  portENTER_CRITICAL(&s_mux);
+  const uint32_t v = s_generation;
   portEXIT_CRITICAL(&s_mux);
   return v;
 }

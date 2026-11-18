@@ -23,4 +23,15 @@ void fetchNow();
  */
 void logHeap(const char* what);
 
+/**
+ * Heap trace (builds with -DPLANE_RADAR_HEAP_TRACE only): if the lowest free
+ * heap since boot dropped since the previous call, print by how much and the
+ * stage that just ended. Callable from any task.
+ */
+#ifdef PLANE_RADAR_HEAP_TRACE
+void traceHeap(const char* stage);
+#else
+inline void traceHeap(const char*) {}
+#endif
+
 }  // namespace services::network_task

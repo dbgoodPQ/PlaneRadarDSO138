@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 
 namespace services::location {
 
@@ -13,6 +14,13 @@ void init();
 /** Current radar center (thread-safe; read by the ADS-B task too). */
 double lat();
 double lon();
+
+/**
+ * Centre and its generation, read together (thread-safe). The generation goes
+ * up on every change, so a fetch started for an older centre can be dropped.
+ */
+void get(double* lat, double* lon, uint32_t* generation);
+uint32_t generation();
 
 /** True once a location has been saved (otherwise the config default is used). */
 bool isSet();

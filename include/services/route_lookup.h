@@ -4,8 +4,9 @@
  * Airline and route for one flight number, from api.adsbdb.com.
  *
  * The UI asks with request(); the network task does the HTTPS call in
- * process(); the UI reads the result with get(). Only the last requested
- * callsign is kept (the selected plane).
+ * process(); the UI reads the result with get(). The last 8 answers (found or
+ * unknown) are cached, so re-selecting a plane needs no request. Only the
+ * newest request is ever pending.
  */
 namespace services::route {
 
@@ -32,5 +33,8 @@ Status get(const char* callsign, Info* out);
 
 /** Run a pending lookup, if any (network task). True if it made a request. */
 bool process();
+
+/** True when process() has a lookup to run (network task). */
+bool pending();
 
 }  // namespace services::route

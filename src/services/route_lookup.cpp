@@ -21,19 +21,47 @@ constexpr int kTimeoutMs = 6000;
 /** Retry a failed (network/server error) lookup after this long. */
 constexpr unsigned long kRetryAfterMs = 30000;
 
+constexpr size_t kCacheSize = 8;
+
 SemaphoreHandle_t s_mutex = nullptr;
 
+struct Entry {
+  char callsign[9];  // "" = free slot
+  Status status;     // Pending, Found, NotFound or Failed
+  Info info;
+  uint32_t used;     // LRU stamp
+  unsigned long failed_at_ms;
+};
+
 // Guarded by s_mutex.
-char s_callsign[9] = "";
-Status s_status = Status::None;
-Info s_info = {};
-unsigned long s_failed_at_ms = 0;
+Entry s_cache[kCacheSize] = {};
+uint32_t s_use_counter = 0;
 
 class Lock {
  public:
   Lock() { xSemaphoreTake(s_mutex, portMAX_DELAY); }
   ~Lock() { xSemaphoreGive(s_mutex); }
 };
+
+/** Cache entry for `callsign`, or nullptr. Lock held. */
+Entry* findEntry(const char* callsign) {
+  for (Entry& e : s_cache) {
+    if (e.callsign[0] != '\0' && strcmp(e.callsign, callsign) == 0) {
+      return &e;
+    }
+  }
+  return nullptr;
+}
+
+/** The newest pending entry, or nullptr. Lock held. */
+Entry* pendingEntry() {
+  for (Entry& e : s_cache) {
+    if (e.callsign[0] != '\0' && e.status == Status::Pending) {
+      return &e;
+    }
+  }
+  return nullptr;
+}
 
 void copyStr(char* out, size_t len, const char* in) {
   if (in == nullptr) {
@@ -138,17 +166,40 @@ void request(const char* callsign) {
   }
   {
     const Lock lock;
-    if (strcmp(s_callsign, callsign) == 0) {
-      const bool retry = s_status == Status::Failed &&
-                         millis() - s_failed_at_ms >= kRetryAfterMs;
-      if (!retry) {
-        return;  // known, not found, or already pending
+    Entry* e = findEntry(callsign);
+    if (e != nullptr) {
+      e->used = ++s_use_counter;
+      const bool ask = e->status == Status::None ||
+                       (e->status == Status::Failed &&
+                        millis() - e->failed_at_ms >= kRetryAfterMs);
+      if (!ask) {
+        return;  // cached, or already pending
       }
-    } else {
-      copyStr(s_callsign, sizeof(s_callsign), callsign);
-      s_info = {};
     }
-    s_status = Status::Pending;
+    // Only the newest request stays pending: older unanswered ones go back
+    // to None (a lookup already in flight still fills its entry).
+    for (Entry& other : s_cache) {
+      if (&other != e && other.callsign[0] != '\0' &&
+          other.status == Status::Pending) {
+        other.status = Status::None;
+      }
+    }
+    if (e == nullptr) {
+      e = &s_cache[0];
+      for (Entry& slot : s_cache) {
+        if (slot.callsign[0] == '\0') {
+          e = &slot;
+          break;
+        }
+        if (slot.used < e->used) {
+          e = &slot;
+        }
+      }
+      *e = Entry{};
+      copyStr(e->callsign, sizeof(e->callsign), callsign);
+      e->used = ++s_use_counter;
+    }
+    e->status = Status::Pending;
   }
   services::network_task::wake();
 }
@@ -158,39 +209,52 @@ Status get(const char* callsign, Info* out) {
     return Status::None;
   }
   const Lock lock;
-  if (strcmp(s_callsign, callsign) != 0) {
+  const Entry* e = findEntry(callsign);
+  if (e == nullptr) {
     return Status::None;
   }
-  if (s_status == Status::Found && out != nullptr) {
-    *out = s_info;
+  if (e->status == Status::Found && out != nullptr) {
+    *out = e->info;
   }
-  return s_status;
+  return e->status;
+}
+
+bool pending() {
+  if (s_mutex == nullptr) {
+    return false;
+  }
+  const Lock lock;
+  return pendingEntry() != nullptr;
 }
 
 bool process() {
   if (s_mutex == nullptr) {
     return false;
   }
-  char callsign[sizeof(s_callsign)];
+  char callsign[sizeof(Entry::callsign)];
   {
     const Lock lock;
-    if (s_status != Status::Pending) {
+    const Entry* e = pendingEntry();
+    if (e == nullptr) {
       return false;
     }
-    copyStr(callsign, sizeof(callsign), s_callsign);
+    copyStr(callsign, sizeof(callsign), e->callsign);
   }
 
   Info info = {};
   const Status result = fetch(callsign, &info);
 
   const Lock lock;
-  // The selection may have moved on while the request ran.
-  if (strcmp(s_callsign, callsign) == 0 && s_status == Status::Pending) {
-    s_status = result;
+  // Kept even if the selection moved on (status back to None): it is cached
+  // for next time. The entry may have been evicted meanwhile.
+  Entry* e = findEntry(callsign);
+  if (e != nullptr &&
+      (e->status == Status::Pending || e->status == Status::None)) {
+    e->status = result;
     if (result == Status::Found) {
-      s_info = info;
+      e->info = info;
     } else if (result == Status::Failed) {
-      s_failed_at_ms = millis();
+      e->failed_at_ms = millis();
     }
   }
   return true;

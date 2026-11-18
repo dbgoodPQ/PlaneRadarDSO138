@@ -58,18 +58,32 @@ void run(void*) {
       logHeap("tick");
     }
     if (services::wifi::connected()) {
+      traceHeap("net:idle");
+      // Another HTTPS request is about to run: free the ADS-B connection
+      // first, so two TLS sessions never hold memory at once.
+      if (!services::location::isSet() ||
+          services::geocode::status() == services::geocode::Status::Pending ||
+          services::route::pending()) {
+        services::adsb::closeConnection();
+      }
       ipLocationIfNeeded(&ip_tried, &ip_last_try_ms);
+      traceHeap("net:ip_location");
       // User-initiated lookups first: someone is waiting on them.
       services::geocode::process();
+      traceHeap("net:geocode");
       services::route::process();
+      traceHeap("net:route");
       if (s_fetch_now || !fetched_once ||
           millis() - last_fetch_ms >= config::kAdsbFetchIntervalMs) {
         s_fetch_now = false;
         fetched_once = true;
         last_fetch_ms = millis();
-        services::adsb::fetchUpdate(services::location::lat(),
-                                    services::location::lon(),
-                                    ui::radar::fetchRadiusKm());
+        double lat = 0.0;
+        double lon = 0.0;
+        uint32_t generation = 0;
+        services::location::get(&lat, &lon, &generation);
+        services::adsb::fetchUpdate(lat, lon, ui::radar::fetchRadiusKm(),
+                                    generation);
       }
     }
     // Sleep until the next ADS-B fetch is due, or until woken.
@@ -113,6 +127,27 @@ void logHeap(const char* what) {
       static_cast<unsigned>(lv.used), static_cast<unsigned>(lv.peak),
       static_cast<unsigned>(lv.failures));
 }
+
+#ifdef PLANE_RADAR_HEAP_TRACE
+void traceHeap(const char* stage) {
+  static portMUX_TYPE mux = portMUX_INITIALIZER_UNLOCKED;
+  static size_t last_min = SIZE_MAX;
+  const size_t min_free = heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
+  portENTER_CRITICAL(&mux);
+  const size_t prev = last_min;
+  last_min = min_free;
+  portEXIT_CRITICAL(&mux);
+  if (min_free < prev) {
+    Serial.printf("heapmin %u (-%u) during %s [core %d] free=%u largest=%u\n",
+                  static_cast<unsigned>(min_free),
+                  static_cast<unsigned>(prev == SIZE_MAX ? 0 : prev - min_free),
+                  stage, xPortGetCoreID(),
+                  static_cast<unsigned>(heap_caps_get_free_size(MALLOC_CAP_8BIT)),
+                  static_cast<unsigned>(
+                      heap_caps_get_largest_free_block(MALLOC_CAP_8BIT)));
+  }
+}
+#endif
 
 void fetchNow() {
   s_fetch_now = true;
