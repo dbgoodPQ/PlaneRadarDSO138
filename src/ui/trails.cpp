@@ -1,17 +1,13 @@
 #include "ui/trails.h"
 
-#include <Arduino.h>
-
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
-
-#include "ui/radar_geometry.h"
 
 namespace ui::trails {
 
 namespace {
 
-constexpr uint32_t kExpireMs = 60000;  // drop trails of aircraft gone this long
 constexpr int kMinMoveUnits = 3;       // ignore fixes < 30 m from the last one
 
 Trail s_trails[kMaxTrails];
@@ -60,12 +56,12 @@ void clear() {
   s_last_base_ms = 0;
 }
 
-bool beginRecord(unsigned long base_ms) {
+bool beginRecord(unsigned long base_ms, uint32_t now_ms) {
   if (base_ms == 0 || base_ms == s_last_base_ms) {
     return false;
   }
   s_last_base_ms = base_ms;
-  s_record_ms = millis();
+  s_record_ms = now_ms;
   for (Trail& t : s_trails) {
     if (t.hex[0] != 0 && s_record_ms - t.last_seen_ms > kExpireMs) {
       memset(&t, 0, sizeof(t));
@@ -74,21 +70,16 @@ bool beginRecord(unsigned long base_ms) {
   return true;
 }
 
-void add(const services::adsb::Aircraft& plane) {
-  if (plane.hex[0] == 0) {
+void add(const char* hex, float east_km, float north_km) {
+  if (hex == nullptr || hex[0] == 0) {
     return;
   }
-  Trail* t = slotFor(plane.hex, s_record_ms);
+  Trail* t = slotFor(hex, s_record_ms);
   if (t == nullptr) {
     return;
   }
   t->last_seen_ms = s_record_ms;
-
-  float dx_km = 0.0f;
-  float dy_km = 0.0f;
-  float dist_km = 0.0f;
-  radar::offsetKmFromCenter(plane.lat, plane.lon, &dx_km, &dy_km, &dist_km);
-  const Point p = {toUnits(dx_km), toUnits(dy_km)};
+  const Point p = {toUnits(east_km), toUnits(north_km)};
 
   if (t->count > 0) {
     const Point& last = t->points[t->count - 1];

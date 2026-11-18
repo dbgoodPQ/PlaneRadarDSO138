@@ -1,248 +1,201 @@
-# Plane Radar
+# Plane Radar (CYD)
 
-<img width="800" height="450" alt="plane-radar" src="https://github.com/user-attachments/assets/716d0992-dab8-47ba-8f1a-2aec7f607419" />
+Live ADS-B radar for the **ESP32-2432S028R "Cheap Yellow Display"** (CYD): a 320×240 touch screen showing the aircraft around your location, with flight details, routes, altitude colours and trails.
 
-**3D printed case (STL + assembly):** [MakerWorld](https://makerworld.com/en/models/2872376-esp32-plane-radar-live-ads-b-on-a-round-display#profileId-3207083) · **Firmware:** [Releases](https://github.com/MatixYo/ESP32-Plane-Radar/releases)
+Based on [MatixYo/ESP32-Plane-Radar](https://github.com/MatixYo/ESP32-Plane-Radar) (ESP32-C3 + round GC9A01), ported to the CYD and rebuilt on LVGL.
 
-Firmware for an **ESP32-C3 Super Mini** and a **1.28″ round GC9A01** display (240×240). Shows a circular **ADS-B radar** around your configured location, with **WiFiManager** for first-time setup.
+## Hardware
 
-## What it does
+- **ESP32-2432S028R** (original 1-USB version): ESP32-WROOM-32, ILI9341 320×240 SPI display, XPT2046 resistive touch
+- **microSD card** (optional): settings are mirrored to `/planeradar.json`
+- Nothing to wire: every pin is on the board (see `include/config.h`)
 
-1. **Wi‑Fi setup** (if needed) — captive portal on AP **`PlaneRadar-Setup`**
-2. **Radar** — live aircraft from [adsb.fi](https://opendata.adsb.fi/) on a sonar-style grid
+| Part | Pins |
+|------|------|
+| Display (HSPI) | SCLK 14, MOSI 13, MISO 12, CS 15, DC 2, backlight 21 (PWM) |
+| Touch (bit-banged SPI) | SCLK 25, MOSI 32, MISO 39, CS 33, IRQ 36 |
+| microSD (VSPI) | SCLK 18, MISO 19, MOSI 23, CS 5 |
+| BOOT button | GPIO 0 |
 
-After Wi‑Fi is saved, the device reconnects automatically; the radar runs in the main loop with periodic ADS-B updates (~5 s).
+## First boot
 
-## Controls (BOOT, GPIO 9, active LOW)
+1. **Touch calibration**: tap the four corner targets. To redo it later, hold a finger on the screen for 3 s while powering up.
+2. **Wi-Fi**: pick a network from the scan list and type the password. It is saved, and reconnects on its own after that.
+3. **Location**: a city-level guess from your IP address is used until you set one. Open **Settings → Location** and search an address (e.g. `14565 gilbert mirabel`).
+
+## Using it
+
+The left two thirds of the screen is the radar; the right third is the detail panel.
 
 | Action | Effect |
 |--------|--------|
-| **Short tap** | Cycle range preset (5 → 10 → 15 → 20 → 25 → 30 km); saved to flash |
-| **Hold 3 s** | Clear Wi‑Fi, location, and units; reboot into setup portal |
+| Tap a plane | Select it: details in the panel, highlighted tag, brighter trail |
+| Tap a dot on the screen edge | Select a plane beyond the outer ring |
+| Tap empty space | Clear the selection |
+| Tap the range label (top right) | Next range: 5 → 10 → 15 → 20 → 25 → 30 km (or mi), saved |
+| Gear (top left) | Settings |
+| BOOT button: tap / hold 3 s | Next range / Settings |
 
-During setup you can also hold BOOT at power-on to force a credential reset (same as the long press).
+### Radar
 
-## DSO138 LCD variant (ESP32-WROOM-32 + ILI9341 320x240)
+- **Plane symbols** point along the heading, with a speed vector. The colour shows altitude:
 
-This fork adds a second build target, `dso138`, for an ESP32-WROOM-32 dev board driving a JYE Tech DSO138 LCD module (ILI9341, 8-bit parallel). The original ESP32-C3 + GC9A01 target is unchanged.
+  | Colour | Altitude |
+  |--------|----------|
+  | Light blue | above 25,000 ft |
+  | Green | 10,000–25,000 ft |
+  | Yellow | 3,000–10,000 ft |
+  | Orange | below 3,000 ft |
+  | Grey | on the ground |
+  | White | unknown |
 
-Status: **not yet tested on hardware.**
+- **Tags**: callsign, type, and altitude with a climb/descent arrow (shown above ±300 ft/min). They're placed around the symbol so they don't overlap each other, other planes or the buttons. When there's no room, a tag shrinks to the callsign, or is hidden. The selected plane always gets its full tag.
+- **Positions are dead-reckoned** every second between fetches (every 5 s), from each plane's track and speed.
+- **Trails**: a fading line through each plane's last ~1 minute of real positions (12 fixes) in its altitude colour. Up to 32 at once, for planes inside the radar.
+- **Beyond the ring**: planes past the outer ring (but still in the fetched area) are dots on the screen edge, at their true bearing.
+- **Emergencies**: squawk 7700 / 7600 / 7500, or the feed's emergency flag. The symbol blinks red, the tag shows the code (`7700 EMER`, `7600 RADIO`, `7500 HIJACK`), the trail is red, and the panel shows a red banner when the plane is selected.
+- **Runways** of major airports (OurAirports `large_airport`, plus CYMX), with one ICAO label per airport.
+- **Status corner** (bottom left): `● 6 · 3s`, the aircraft count and the age of the data. The dot is green under 15 s, orange under 60 s, and red when the data is older or Wi-Fi is down.
 
-```
-pio run -e dso138 -t upload
-pio device monitor
-```
+### Detail panel
 
-- Selected by `-DPLANE_RADAR_DSO138=1` (set in the `dso138` env). Pins and panel settings are in `include/config.h`; the LovyanGFX device is in `include/hardware/lgfx_config.hpp`.
-- The radar stays a 240x240 circle, centered on the 320x240 screen with a 40 px band either side (`kRadarOriginX`).
-- BOOT button is GPIO 0 (range tap / 3 s hold to reset Wi-Fi).
-- Backlight is not software-controlled: wire P16 to 3V3 through a resistor.
+- **Selected plane**: callsign, airline and route (from adsbdb), aircraft name, then ALT, V/S, SPD, TRK, DST and BRG. "Signal lost" shows when the plane drops out of the feed; the selection clears after 10 s.
+- **Nothing selected**: a summary (in range, beyond the ring, the nearest plane and its distance, emergencies) and the altitude colour legend.
 
-| Module pin | Signal | ESP32 |
-|---|---|---|
-| P7 | nCS | GPIO27 |
-| P8 | RS (DC) | GPIO14 |
-| P9 | nWR | GPIO25 |
-| P10 | nRD | GPIO13 |
-| P31 | nRESET | GPIO26 |
-| P23-P30 | DB0-DB7 | GPIO16, 4, 23, 22, 21, 19, 18, 17 |
-| P5, P17-P21, P34 | GND | GND |
-| P6, P11, P32, P33 | 3.3 V | 3V3 |
+## Settings
 
-If the image is upside down, set `kDisplayRotation` to 3. If colors are swapped or inverted, flip `kDisplayRgbOrder` / `kDisplayInvert`.
-The merged-image script and CI workflows are C3-specific and do not apply to this target.
+| Setting | Notes |
+|---------|-------|
+| Location | Address search (OpenStreetMap Nominatim). Changing it clears the traffic and the trails. |
+| Wi-Fi | Scan and connect to another network |
+| Distance units | km or mi (ring label, range label, distances) |
+| Runways | Show or hide the runway overlay |
+| Ground aircraft | Show or hide aircraft on the ground |
+| Brightness | Backlight, 10–100 % |
 
-## Wi‑Fi setup portal
+Settings are saved in the ESP32's flash (NVS). With a microSD card they are also written to **`/planeradar.json`**, which wins at boot. So you can edit the file on a PC:
 
-**First-time setup** (no saved Wi‑Fi):
-
-1. Connect to **`PlaneRadar-Setup`**
-2. Open **`http://plane-radar.local`** (preferred) or **`http://192.168.4.1`** — both are shown on the yellow setup screen; captive portal may open automatically
-3. Set home Wi‑Fi, then save
-
-**Reconfigure anytime** (after the device is on your network):
-
-1. Open **`http://plane-radar.local`** or **`http://<device-ip>`** (e.g. from your router or serial log at boot)
-2. Change Wi‑Fi, location, units, or runway overlay; save
-
-The same portal runs on the setup AP and on the device’s LAN IP while connected to Wi‑Fi. mDNS hostname is `plane-radar` → **plane-radar.local** (`kPortalHostname` in `config.h`). Some clients resolve `.local` slowly; use the IP if needed.
-
-**Custom fields** (stored in NVS):
-
-| Field | Purpose |
-|-------|---------|
-| **Latitude / Longitude** | Radar center and ADS-B query position (defaults in `config.h` until set) |
-| **Display distances in miles** | Ring scale label in **mi** instead of **km** (e.g. `6mi` vs `10km`) |
-| **Show airport runways** | Major-airport runway overlay on the radar (off to hide) |
-
-After a reset, the device reboots and shows the setup screen immediately (no “Connecting” loop on stale credentials).
-
-## Radar display
-
-### Grid
-
-- Dark blue background, subdued green rings and crosshairs
-- White **N / S / E / W** at the bezel; range label on the **east** spoke (ring 3 = ¾ of outer radius)
-- Larger selected range indicator in the **upper-right corner** (uses km or miles according to the units setting)
-- White center dot
-
-Layout and colors: `include/ui/radar_theme.h`.
-
-### Range presets
-
-| Ring 3 label | Outer radius (aircraft scale) |
-|------------|-------------------------------|
-| 5 km / 3 mi | ~6.7 km |
-| 10 km / 6 mi | ~13.3 km (default) |
-| 15 km / 9 mi | ~20 km |
-| 20 km / 12 mi | ~26.7 km |
-| 25 km / 16 mi | ~33.3 km |
-| 30 km / 19 mi | ~40 km |
-
-Preset and miles/km choice persist across reboot (`planeradar` NVS namespace).
-
-### Trails
-
-- Each aircraft inside the radar leaves a fading line through its last ~1 minute of real positions (12 fixes, one per fetch), in its altitude colour; up to 32 trails at once
-- The selected plane's trail is brighter and wider; emergency trails are steady red
-- Trails are cleared when the radar location changes
-
-### Runways
-
-- Major airports from OurAirports (`large_airport`), plus CYMX; all open runway strips in range (helipads excluded)
-- Teal runway lines with one ICAO label per airport (e.g. `KJFK`); toggle in the Wi‑Fi setup portal
-- Update the embedded list: `python3 scripts/build_large_airports.py`
-
-### Aircraft
-
-- **Inside the outer ring** — red heading triangle, magenta speed vector (clipped at the ring), callsign / type / altitude tags
-- **Outside the ring** (still within ADS-B fetch) — small **red dot on the screen rim** at the correct bearing (direction cue; not distance-accurate past the ring)
-- **Tags** — placed toward the **center**: west (left) → tag on the **right** of the symbol; east (right) → tag on the **left**
-
-As range decreases (or aircraft approach), targets move inward; beyond-ring dots become full symbols when they cross the outer ring.
-
-### ADS-B
-
-- Source: `https://opendata.adsb.fi/api/v3/`
-- Fetch radius: `ui::radar::fetchRadiusKm()` — scales with the active preset to roughly the screen edge (so rim dots have data)
-- Poll interval: `kAdsbFetchIntervalMs` (5 s) in `config.h`
-- Ground aircraft hidden by default (`kAdsbShowGroundAircraft`)
-
-## Configuration
-
-Edit **`include/config.h`** for hardware and behavior:
-
-| Area | Keys / notes |
-|------|----------------|
-| Portal | `kPortalApName`, `kPortalIp`, `kPortalHostname` / `kPortalHostUrl` (mDNS; needs `-DWM_MDNS` in `platformio.ini`) |
-| Wi‑Fi timing | connect attempts, reconnect grace, portal timeout (`0` = no timeout) |
-| BOOT | `kBootPin`, `kBootResetHoldMs`, `kBootTapMinMs` |
-| Display SPI | pins, `kDisplayInvert`, `kDisplayRgbOrder`, `kDisplaySpiWriteHz` |
-| Default location | `kDefaultRadarLat`, `kDefaultRadarLon` (until portal overrides) |
-| ADS-B | `kAdsbFetchIntervalMs`, `kAdsbShowGroundAircraft` |
-
-Range presets: `include/ui/radar_range.h` (`kRangePresets`).
-
-## Project layout
-
-```
-include/
-  config.h
-  hardware/
-    lgfx_config.hpp
-    display.h
-  data/
-    large_airports.h
-  ui/
-    radar_theme.h          — radar layout (left 2/3 of the panel) and colors
-    radar_range.h
-    radar_screen.h         — LVGL radar screen
-    radar_geometry.h
-    radar_draw.h
-    radar_fonts.h          — Noto Sans Bold LVGL fonts (src/ui/fonts/)
-    runway_overlay.h
-    status_screens.h
-  services/
-    wifi_setup.h
-    radar_location.h
-    adsb_client.h
-scripts/
-  build_large_airports.py
-src/
-  main.cpp
-  data/
-    large_airports_data.cpp
-  hardware/
-  ui/
-  services/
+```json
+{
+  "version": 1,
+  "units": "km",
+  "runways": true,
+  "ground_aircraft": false,
+  "brightness": 100,
+  "range_km": 10,
+  "location": {
+    "lat": 45.635121,
+    "lon": -73.992735,
+    "name": "14565 Rue Gilbert, Mirabel",
+    "approximate": false
+  }
+}
 ```
 
-## Wiring (GC9A01 ↔ ESP32-C3 Super Mini)
+- `units`: `"km"` or `"mi"`
+- `range_km`: 5, 10, 15, 20, 25 or 30
+- Missing or invalid fields keep the stored value. Wi-Fi credentials are never written to the card.
 
-| Display | ESP32-C3 |
-|---------|----------|
-| VCC | 3V3 |
-| GND | GND |
-| RST | GPIO **0** |
-| CS | GPIO **1** |
-| DC | GPIO **10** |
-| SDA (MOSI) | GPIO **3** |
-| SCL (SCLK) | GPIO **4** |
-| BOOT (user) | GPIO **9** |
+## Build and flash
 
-## Build
+[PlatformIO](https://platformio.org/), environment **`cyd`** (the default):
 
 ```bash
-pio run -t upload
-pio device monitor
+pio run -t upload            # build and flash over USB
+pio device monitor           # serial log, 115200 baud
 ```
 
-- PlatformIO env: **`supermini`**
-- Serial: **115200** baud
-- USB CDC on boot enabled in `platformio.ini` for the Super Mini
-
-### Web-flashable release image
-
-Single `.bin` for [esptool-js](https://espressif.github.io/esptool-js/) and similar tools (ESP32-C3, 4 MB, flash at **0x0**):
+**Single image for browser flashers** (flash at **0x0**, e.g. [esptool-js](https://espressif.github.io/esptool-js/)):
 
 ```bash
-chmod +x scripts/merge-firmware.sh   # once
-./scripts/merge-firmware.sh
+pio run -t merge -e cyd      # -> .pio/build/cyd/firmware-merged.bin
+./scripts/merge-firmware.sh  # same, copied to release/plane-radar-merged.bin
 ```
 
-Writes `release/plane-radar-merged.bin`. Skip rebuild if firmware is already built:
+### Debug build flags
+
+Set with `PLATFORMIO_BUILD_FLAGS` (e.g. `PLATFORMIO_BUILD_FLAGS=-DPLANE_RADAR_FAKE_SQUAWK pio run -e cyd -t upload`):
+
+| Flag | Effect |
+|------|--------|
+| `PLANE_RADAR_FAKE_SQUAWK` | The first aircraft of every fetch shows as squawking 7700 |
+| `PLANE_RADAR_HEAP_TRACE` | Logs each new heap low and the network stage that caused it |
+
+The serial log also prints `perf` (render and flush times) and `heap[...]` (free, largest block, lowest) lines every 30 s.
+
+### Unit tests
+
+Pure logic is tested on the PC: HTTP chunked decoding, ADS-B parsing, the trail store, altitude bands, range presets and labels. The tests need a host C++ compiler (`gcc`/`g++`):
 
 ```bash
-./scripts/merge-firmware.sh --no-build
+pio test -e native
 ```
-
-Or via PlatformIO only (output: `.pio/build/supermini/firmware-merged.bin`):
-
-```bash
-pio run -e supermini
-pio run -t merge -e supermini
-```
-
-Put the board in download mode (hold **BOOT**, tap **RESET**), then flash with Chrome/Edge over USB.
 
 ### CI and releases (GitHub Actions)
 
 | Workflow | When | Output |
 |----------|------|--------|
-| [Build](.github/workflows/build.yml) | Push / PR to `main` | Artifact `plane-radar-supermini` (merged + split `.bin` files, ~90 days) |
-| [Release](.github/workflows/release.yml) | Git tag `v*` (e.g. `v1.0.0`) | GitHub Release asset `plane-radar-v1.0.0.bin` + `.sha256` |
+| [Build](.github/workflows/build.yml) | Push to `main`, `master` or `cyd-esp32-2432s028r`; PRs; manual | Runs the unit tests, then builds. Artifact `plane-radar-cyd-<sha>`: merged `.bin`, split `.bin` files, `FLASHING.txt` |
+| [Release](.github/workflows/release.yml) | Tag `v*` (e.g. `v2.0.0`) | GitHub Release with `plane-radar-cyd-<version>.bin` + `.sha256` |
 
-To ship a version users can download:
+## How it works
 
-```bash
-git tag v1.0.0
-git push origin v1.0.0
+- **Two tasks**: the Arduino loop (core 1) runs LVGL and the UI. A network task (core 0) runs every HTTP request, so the screen never waits on the network.
+- **ADS-B**: `opendata.adsb.fi`, every 5 s, over one kept-open HTTPS connection. A TLS handshake briefly needs ~85 KB of heap, so it happens once, not every fetch. The fetch radius reaches the screen edge so the edge dots have data. The aircraft list is double-buffered: the network task fills one buffer while the UI reads the other.
+- **One TLS session at a time**: the ADS-B connection is closed before a route, address or IP lookup, and reopened on the next fetch. Routes are cached (last 8 flights).
+- **Rendering**: LVGL 9 partial rendering (20-line DMA buffer) through LovyanGFX. Only the areas that changed are redrawn each second (~50 ms per frame instead of ~200 ms for a full redraw).
+
+## Project layout
+
+```
+include/
+  config.h                pins, timing, default location
+  lv_conf.h               LVGL configuration
+  hardware/               display (LovyanGFX), touch (XPT2046), BOOT button
+  services/
+    adsb_client.h         ADS-B fetch, double buffer, kept-open connection
+    adsb_parse.h          JSON -> Aircraft (pure, unit-tested)
+    http_body_framing.h   HTTP chunked / Content-Length body decoder
+    route_lookup.h        airline + route (adsbdb), 8-entry cache
+    geocode.h             address search (Nominatim)
+    ip_location.h         first-boot location guess (ip-api.com)
+    radar_location.h      radar centre (NVS), generation counter
+    settings.h            user settings (NVS)
+    config_store.h        SD card mirror (/planeradar.json)
+    wifi_conn.h           Wi-Fi connection and reconnects
+    network_task.h        the network task, heap log
+  ui/
+    radar_screen.h        radar: frame model, tag placement, redraw only what changed
+    detail_panel.h        selected plane / idle summary + legend
+    trails.h              trail store (pure, unit-tested)
+    settings_screen.h     Settings, address search
+    wifi_screen.h         Wi-Fi scan / password / connecting
+    radar_theme.h         layout, colours, altitude bands
+    radar_range.h         range presets, labels
+    radar_draw.h          LVGL draw helpers (skip what's off the strip)
+    radar_geometry.h      lat/lon -> screen
+    runway_overlay.h      runway lines and labels
+    lvgl_port.h, lvgl_mem.h, perf.h, radar_fonts.h
+  data/large_airports.h
+src/                      matching .cpp files, fonts, airport data
+test/                     native unit tests (Unity), stubs
+scripts/                  airport list builder, firmware merge
+partitions/               flash layout
 ```
 
-The release workflow builds firmware in CI and attaches the merged image to the release. Download from **Releases** on GitHub, then flash at **0x0** (ESP32-C3, 4 MB).
+Update the airport list with `python3 scripts/build_large_airports.py`.
+
+## Data sources
+
+- Aircraft: [adsb.fi](https://opendata.adsb.fi/) open data API
+- Routes and airlines: [adsbdb](https://www.adsbdb.com/)
+- Address search: [OpenStreetMap Nominatim](https://nominatim.org/), max 1 request/s
+- First-boot location: [ip-api.com](https://ip-api.com/) (city level)
+- Airports and runways: [OurAirports](https://ourairports.com/data/)
 
 ## Dependencies
 
+- [LVGL](https://lvgl.io/) 9.2
 - [LovyanGFX](https://github.com/lovyan03/LovyanGFX)
-- [WiFiManager](https://github.com/tzapu/WiFiManager)
-- [ArduinoJson](https://github.com/bblanchon/ArduinoJson)
+- [ArduinoJson](https://arduinojson.org/) 7
+- Arduino-ESP32 (PlatformIO `espressif32@6.5.0`)

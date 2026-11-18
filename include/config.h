@@ -77,7 +77,5 @@ constexpr unsigned long kAdsbFetchIntervalMs = 5000;
 /** Radar refresh: positions are dead-reckoned between fetches, and only the
  *  areas that changed are redrawn. */
 constexpr unsigned long kRadarRedrawIntervalMs = 1000;
-/** Legacy scale unused — fetch uses radar::fetchRadiusKm() to screen edge. */
-constexpr float kAdsbFetchRadiusScale = 1.0f;
 
 }  // namespace config

@@ -11,6 +11,7 @@
 #include <cstring>
 
 #include "config.h"
+#include "services/adsb_parse.h"
 #include "services/http_body_framing.h"
 #include "services/network_task.h"
 #include "services/radar_location.h"
@@ -169,153 +170,6 @@ using BodyReader = services::http::BodyFramer<PollingSocketSource>;
 
 float kmToNauticalMiles(float km) { return km / kKmPerNm; }
 
-bool readJsonFloat(const JsonObject& obj, const char* key, float* out) {
-  if (obj[key].is<float>() || obj[key].is<double>() || obj[key].is<int>()) {
-    *out = obj[key].as<float>();
-    return true;
-  }
-  return false;
-}
-
-float pickNoseHeading(const JsonObject& plane) {
-  float v = 0.0f;
-  if (readJsonFloat(plane, "true_heading", &v)) {
-    return v;
-  }
-  if (readJsonFloat(plane, "mag_heading", &v)) {
-    return v;
-  }
-  if (readJsonFloat(plane, "track", &v)) {
-    return v;
-  }
-  if (readJsonFloat(plane, "dir", &v)) {
-    return v;
-  }
-  return 0.0f;
-}
-
-float pickTrackHeading(const JsonObject& plane) {
-  float v = 0.0f;
-  if (readJsonFloat(plane, "track", &v)) {
-    return v;
-  }
-  if (readJsonFloat(plane, "true_heading", &v)) {
-    return v;
-  }
-  if (readJsonFloat(plane, "mag_heading", &v)) {
-    return v;
-  }
-  if (readJsonFloat(plane, "dir", &v)) {
-    return v;
-  }
-  return 0.0f;
-}
-
-float pickGroundSpeed(const JsonObject& plane) {
-  float v = 0.0f;
-  if (readJsonFloat(plane, "gs", &v)) {
-    return v;
-  }
-  if (readJsonFloat(plane, "tas", &v)) {
-    return v;
-  }
-  if (readJsonFloat(plane, "ias", &v)) {
-    return v;
-  }
-  return 0.0f;
-}
-
-bool isOnGround(const JsonObject& plane) {
-  if (!plane["alt_baro"].is<const char*>()) {
-    return false;
-  }
-  return strcmp(plane["alt_baro"].as<const char*>(), "ground") == 0;
-}
-
-void copyJsonStringTrimmed(const JsonObject& obj, const char* key, char* out,
-                           size_t out_len) {
-  out[0] = '\0';
-  if (out_len == 0 || !obj[key].is<const char*>()) {
-    return;
-  }
-  const char* s = obj[key].as<const char*>();
-  size_t n = strnlen(s, out_len - 1);
-  while (n > 0 && s[n - 1] == ' ') {
-    --n;
-  }
-  memcpy(out, s, n);
-  out[n] = '\0';
-}
-
-/** Altitude text for the tag ("12345 ft" / "GND") plus the numeric fields. */
-void readAltitude(const JsonObject& plane, Aircraft* ac) {
-  ac->alt[0] = 0;
-  ac->alt_ft = 0;
-  ac->has_alt = false;
-  ac->on_ground = false;
-
-  if (isOnGround(plane)) {
-    snprintf(ac->alt, sizeof(ac->alt), "GND");
-    ac->on_ground = true;
-    return;
-  }
-
-  float alt = 0.0f;
-  if (readJsonFloat(plane, "alt_baro", &alt) ||
-      readJsonFloat(plane, "alt_geom", &alt)) {
-    ac->alt_ft = static_cast<int32_t>(lroundf(alt));
-    ac->has_alt = true;
-    snprintf(ac->alt, sizeof(ac->alt), "%d ft", static_cast<int>(ac->alt_ft));
-  }
-}
-
-/** Vertical rate: barometric, else geometric. */
-void readVerticalRate(const JsonObject& plane, Aircraft* ac) {
-  float rate = 0.0f;
-  ac->has_vrate = readJsonFloat(plane, "baro_rate", &rate) ||
-                  readJsonFloat(plane, "geom_rate", &rate);
-  if (rate > 32000.0f) rate = 32000.0f;
-  if (rate < -32000.0f) rate = -32000.0f;
-  ac->vrate_fpm = ac->has_vrate ? static_cast<int16_t>(lroundf(rate)) : 0;
-}
-
-/** Squawk 7500/7600/7700 wins; otherwise the feed's "emergency" field. */
-void readEmergency(const JsonObject& plane, Aircraft* ac) {
-  copyJsonStringTrimmed(plane, "squawk", ac->squawk, sizeof(ac->squawk));
-  ac->emergency = Emergency::None;
-  if (strcmp(ac->squawk, "7700") == 0) {
-    ac->emergency = Emergency::General;
-  } else if (strcmp(ac->squawk, "7600") == 0) {
-    ac->emergency = Emergency::Radio;
-  } else if (strcmp(ac->squawk, "7500") == 0) {
-    ac->emergency = Emergency::Hijack;
-  } else if (plane["emergency"].is<const char*>()) {
-    const char* e = plane["emergency"].as<const char*>();
-    if (strcmp(e, "nordo") == 0) {
-      ac->emergency = Emergency::Radio;
-    } else if (strcmp(e, "unlawful") == 0) {
-      ac->emergency = Emergency::Hijack;
-    } else if (strcmp(e, "general") == 0 || strcmp(e, "lifeguard") == 0 ||
-               strcmp(e, "minfuel") == 0 || strcmp(e, "downed") == 0) {
-      ac->emergency = Emergency::General;
-    }
-  }
-}
-
-void fillTagFields(Aircraft* ac, const JsonObject& plane) {
-  copyJsonStringTrimmed(plane, "hex", ac->hex, sizeof(ac->hex));
-  copyJsonStringTrimmed(plane, "flight", ac->callsign, sizeof(ac->callsign));
-  if (ac->callsign[0] == '\0') {
-    copyJsonStringTrimmed(plane, "hex", ac->callsign, sizeof(ac->callsign));
-  }
-
-  copyJsonStringTrimmed(plane, "t", ac->type, sizeof(ac->type));
-  copyJsonStringTrimmed(plane, "desc", ac->desc, sizeof(ac->desc));
-  readAltitude(plane, ac);
-  readVerticalRate(plane, ac);
-  readEmergency(plane, ac);
-}
-
 }  // namespace
 
 void init() {
@@ -468,28 +322,13 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km,
       if (n >= kMaxAircraft) {
         break;
       }
-      if (!plane["lat"].is<float>() || !plane["lon"].is<float>()) {
+      if (parse::isOnGround(plane) && !services::settings::showGroundAircraft()) {
         continue;
       }
-      if (isOnGround(plane) && !services::settings::showGroundAircraft()) {
-        continue;
+      if (!parse::aircraft(plane, &parsed[n])) {
+        continue;  // no position
       }
 
-      parsed[n].lat = plane["lat"].as<float>();
-      parsed[n].lon = plane["lon"].as<float>();
-      parsed[n].nose_deg = pickNoseHeading(plane);
-      parsed[n].track_deg = pickTrackHeading(plane);
-      parsed[n].gs_knots = pickGroundSpeed(plane);
-
-      // seen_pos: seconds since this position was measured. Use it as the
-      // dead-reckoning age offset, capped so a very stale fix isn't flung far.
-      float seen_pos = 0.0f;
-      readJsonFloat(plane, "seen_pos", &seen_pos);
-      if (seen_pos < 0.0f) seen_pos = 0.0f;
-      if (seen_pos > 30.0f) seen_pos = 30.0f;
-      parsed[n].pos_age_ms = static_cast<uint32_t>(seen_pos * 1000.0f);
-
-      fillTagFields(&parsed[n], plane);
 #ifdef PLANE_RADAR_FAKE_SQUAWK
       // Test build only: show the first aircraft as squawking 7700.
       if (n == 0) {

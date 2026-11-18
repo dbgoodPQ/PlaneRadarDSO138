@@ -555,7 +555,7 @@ void computeAircraft() {
   unsigned long base_ms = 0;
   size_t n = 0;
   s_planes = services::adsb::takeLatest(&n, &base_ms);
-  const bool record_trails = trails::beginRecord(base_ms);
+  const bool record_trails = trails::beginRecord(base_ms, millis());
   const float inner_max_km = innerRingMaxKm();
   s_px_per_trail_unit = static_cast<float>(radar::kGridOuterRadius) /
                         radar::rangeCurrent().outer_km / 100.0f;
@@ -603,7 +603,14 @@ void computeAircraft() {
       int y = 0;
       radar::latLonToScreen(lat, lon, &x, &y);
       if (record_trails) {
-        trails::add(s_planes[i]);  // only aircraft inside the radar get trails
+        // Only aircraft inside the radar get trails; store the real fix, not
+        // the dead-reckoned position.
+        float fix_dx = 0.0f;
+        float fix_dy = 0.0f;
+        float fix_dist = 0.0f;
+        radar::offsetKmFromCenter(s_planes[i].lat, s_planes[i].lon, &fix_dx,
+                                  &fix_dy, &fix_dist);
+        trails::add(s_planes[i].hex, fix_dx, fix_dy);
       }
       PlaneItem& item = s_items[s_item_count++];
       item.index = static_cast<uint8_t>(i);
