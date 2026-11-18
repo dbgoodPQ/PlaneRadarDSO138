@@ -6,6 +6,39 @@
 
 namespace services::adsb {
 
+/** Emergency state, from the squawk (7500/7600/7700) or the feed's field. */
+enum class Emergency : uint8_t { None, General, Radio, Hijack };
+
+/** Short tag label: "EMER", "RADIO", "HIJACK" ("" for None). */
+inline const char* emergencyShort(Emergency e) {
+  switch (e) {
+    case Emergency::General:
+      return "EMER";
+    case Emergency::Radio:
+      return "RADIO";
+    case Emergency::Hijack:
+      return "HIJACK";
+    case Emergency::None:
+    default:
+      return "";
+  }
+}
+
+/** Panel banner label: "EMERGENCY", "RADIO FAILURE", "HIJACK". */
+inline const char* emergencyLong(Emergency e) {
+  switch (e) {
+    case Emergency::General:
+      return "EMERGENCY";
+    case Emergency::Radio:
+      return "RADIO FAILURE";
+    case Emergency::Hijack:
+      return "HIJACK";
+    case Emergency::None:
+    default:
+      return "";
+  }
+}
+
 struct Aircraft {
   float lat;
   float lon;
@@ -26,6 +59,12 @@ struct Aircraft {
   int32_t alt_ft;
   bool has_alt;
   bool on_ground;
+  /** Vertical rate (ft/min, + = climbing) when has_vrate. */
+  int16_t vrate_fpm;
+  bool has_vrate;
+  /** Transponder code, e.g. "7700" (may be empty). */
+  char squawk[5];
+  Emergency emergency;
   /** Full aircraft name, e.g. "BOEING 737-800" (may be empty). */
   char desc[34];
 };

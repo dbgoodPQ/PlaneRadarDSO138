@@ -1,6 +1,7 @@
 #include "ui/detail_panel.h"
 
 #include <cmath>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <initializer_list>
@@ -19,12 +20,15 @@ constexpr int kPadX = 5;
 constexpr int kPadY = 4;
 constexpr float kKmPerMile = 1.609344f;
 
-enum Row { kRowAlt, kRowSpd, kRowTrk, kRowDst, kRowBrg, kRowCount };
-constexpr const char* kRowNames[kRowCount] = {"ALT", "SPD", "TRK", "DST", "BRG"};
+enum Row { kRowAlt, kRowVs, kRowSpd, kRowTrk, kRowDst, kRowBrg, kRowCount };
+constexpr const char* kRowNames[kRowCount] = {"ALT", "V/S", "SPD",
+                                              "TRK", "DST", "BRG"};
 
 lv_obj_t* s_panel = nullptr;
 lv_obj_t* s_status = nullptr;    // "Tap a plane" / "Signal lost"
-lv_obj_t* s_legend = nullptr;    // altitude colours, shown with the hint
+lv_obj_t* s_legend = nullptr;    // altitude colours (idle panel)
+lv_obj_t* s_summary = nullptr;   // traffic summary (idle panel)
+Summary s_sum = {};
 lv_obj_t* s_details = nullptr;   // everything below, hidden when no selection
 lv_obj_t* s_callsign = nullptr;
 lv_obj_t* s_type = nullptr;
@@ -128,6 +132,55 @@ void onLegendDraw(lv_event_t* e) {
   }
 }
 
+// --- Traffic summary (idle panel) ---
+constexpr int kSummaryLines = 5;
+
+int summaryRowHeight() { return lv_font_get_line_height(radar::fontSmall()) + 2; }
+
+bool sameSummary(const Summary& a, const Summary& b) {
+  return a.in_range == b.in_range && a.beyond == b.beyond &&
+         a.emergencies == b.emergencies && a.has_nearest == b.has_nearest &&
+         strcmp(a.nearest, b.nearest) == 0 &&
+         lroundf(a.nearest_km * 10.0f) == lroundf(b.nearest_km * 10.0f);
+}
+
+void onSummaryDraw(lv_event_t* e) {
+  lv_layer_t* layer = lv_event_get_layer(e);
+  lv_area_t c;
+  lv_obj_get_coords(static_cast<lv_obj_t*>(lv_event_get_target(e)), &c);
+  const lv_font_t* font = radar::fontSmall();
+  const int row_h = summaryRowHeight();
+  int y = c.y1;
+  char buf[32];
+  auto line = [&](const char* text, uint32_t rgb) {
+    radar::draw::text(layer, text, font, rgb, c.x1, y, radar::draw::HAlign::Left,
+                      radar::draw::VAlign::Top);
+    y += row_h;
+  };
+
+  if (s_sum.in_range == 0 && s_sum.beyond == 0) {
+    line("No aircraft", radar::kColorPanelDim);
+    return;
+  }
+  snprintf(buf, sizeof(buf), "%u in range", static_cast<unsigned>(s_sum.in_range));
+  line(buf, radar::kColorPanelText);
+  snprintf(buf, sizeof(buf), "%u beyond", static_cast<unsigned>(s_sum.beyond));
+  line(buf, radar::kColorPanelDim);
+  if (s_sum.has_nearest) {
+    line("Nearest", radar::kColorPanelDim);
+    const bool miles = radar::useMiles();
+    const float dist = miles ? s_sum.nearest_km / kKmPerMile : s_sum.nearest_km;
+    snprintf(buf, sizeof(buf), "%s %.1f %s", s_sum.nearest, dist, miles ? "mi" : "km");
+    line(buf, radar::kColorPanelText);
+  }
+  if (s_sum.emergencies > 0) {
+    snprintf(buf, sizeof(buf), "! %u emergenc%s",
+             static_cast<unsigned>(s_sum.emergencies),
+             s_sum.emergencies == 1 ? "y" : "ies");
+    line(buf, radar::kColorEmergency);
+  }
+}
+
 int roundDeg(float deg) {
   int d = static_cast<int>(lroundf(deg)) % 360;
   return d < 0 ? d + 360 : d;
@@ -197,6 +250,16 @@ void create(lv_obj_t* screen) {
   lv_obj_set_style_pad_row(s_panel, 4, 0);
 
   s_status = makeLabel(s_panel, radar::fontSmall(), radar::kColorPanelDim, true);
+  lv_obj_set_style_pad_all(s_status, 2, 0);
+  lv_obj_set_style_radius(s_status, 3, 0);
+
+  // Traffic summary (idle panel only), drawn by one object.
+  s_summary = lv_obj_create(s_panel);
+  lv_obj_remove_style_all(s_summary);
+  lv_obj_remove_flag(s_summary, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_remove_flag(s_summary, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_size(s_summary, lv_pct(100), summaryRowHeight() * kSummaryLines);
+  lv_obj_add_event_cb(s_summary, onSummaryDraw, LV_EVENT_DRAW_MAIN, nullptr);
 
   // Altitude colour legend (idle panel only): one object that draws itself,
   // instead of ~20 widgets (saves ~2.5 KB of heap).
@@ -240,13 +303,15 @@ void create(lv_obj_t* screen) {
     s_values[r] = makeLabel(row, radar::fontSmall(), radar::kColorPanelText, false);
   }
 
-  showHint();
+  s_sum = Summary{};
+  showIdle(s_sum);
 }
 
 void forget() {
   s_panel = nullptr;
   s_status = nullptr;
   s_legend = nullptr;
+  s_summary = nullptr;
   s_details = nullptr;
   s_callsign = nullptr;
   s_type = nullptr;
@@ -259,13 +324,16 @@ void forget() {
   }
 }
 
-void showHint() {
+void showIdle(const Summary& summary) {
   if (s_panel == nullptr) {
     return;
   }
-  setText(s_status, "Tap a plane to see its details.\n\nTap the range to zoom.");
-  lv_obj_set_style_text_color(s_status, lv_color_hex(radar::kColorPanelDim), 0);
-  setHidden(s_status, false);
+  if (!sameSummary(summary, s_sum)) {
+    s_sum = summary;
+    lv_obj_invalidate(s_summary);
+  }
+  setHidden(s_status, true);
+  setHidden(s_summary, false);
   setHidden(s_legend, false);
   setHidden(s_details, true);
 }
@@ -275,19 +343,44 @@ void show(const services::adsb::Aircraft& plane, float dist_km,
   if (s_panel == nullptr) {
     return;
   }
-  setText(s_status, "Signal lost");
-  lv_obj_set_style_text_color(s_status, lv_color_hex(radar::kColorPanelWarning), 0);
-  setHidden(s_status, !lost);
+  // Status line: emergency banner (red box) and/or "Signal lost".
+  const bool emergency = plane.emergency != services::adsb::Emergency::None;
+  char status[40] = "";
+  if (emergency) {
+    snprintf(status, sizeof(status), "%s %s%s",
+             services::adsb::emergencyLong(plane.emergency), plane.squawk,
+             lost ? "\nSignal lost" : "");
+  } else if (lost) {
+    snprintf(status, sizeof(status), "Signal lost");
+  }
+  setText(s_status, status);
+  lv_obj_set_style_text_color(
+      s_status,
+      lv_color_hex(emergency ? radar::kColorLabel : radar::kColorPanelWarning), 0);
+  lv_obj_set_style_bg_color(s_status, lv_color_hex(radar::kColorEmergency), 0);
+  lv_obj_set_style_bg_opa(s_status, emergency ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+  setHidden(s_status, status[0] == 0);
+  setHidden(s_summary, true);
   setHidden(s_legend, true);
   setHidden(s_details, false);
 
   setText(s_callsign, plane.callsign[0] != '\0' ? plane.callsign : plane.hex);
   setOptional(s_type, plane.type);
-  setOptional(s_desc, plane.desc);
+  // The banner takes a line: drop the aircraft name so the rows still fit.
+  setOptional(s_desc, emergency ? "" : plane.desc);
   showRoute(plane);
 
   char buf[24];
   setText(s_values[kRowAlt], plane.alt[0] != '\0' ? plane.alt : "-");
+
+  if (!plane.has_vrate) {
+    snprintf(buf, sizeof(buf), "-");
+  } else if (std::abs(plane.vrate_fpm) < radar::kVrateLevelFpm) {
+    snprintf(buf, sizeof(buf), "level");
+  } else {
+    snprintf(buf, sizeof(buf), "%+d fpm", static_cast<int>(plane.vrate_fpm));
+  }
+  setText(s_values[kRowVs], buf);
 
   if (plane.gs_knots > 0.0f) {
     snprintf(buf, sizeof(buf), "%d kt", static_cast<int>(lroundf(plane.gs_knots)));

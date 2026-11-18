@@ -17,8 +17,18 @@ void create(lv_obj_t* screen);
 /** The radar screen was deleted: drop the (now dangling) object pointers. */
 void forget();
 
-/** No plane selected: show the "tap a plane" hint. */
-void showHint();
+/** Traffic summary shown when no plane is selected. */
+struct Summary {
+  uint16_t in_range;     // inside the outer ring
+  uint16_t beyond;       // rim dots
+  uint16_t emergencies;  // anywhere in the feed
+  bool has_nearest;
+  char nearest[9];       // callsign
+  float nearest_km;
+};
+
+/** No plane selected: traffic summary + altitude legend. */
+void showIdle(const Summary& summary);
 
 /**
  * Show `plane`. `dist_km` / `bearing_deg` are from the radar center; `lost`

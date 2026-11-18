@@ -225,6 +225,39 @@ void readAltitude(const JsonObject& plane, Aircraft* ac) {
   }
 }
 
+/** Vertical rate: barometric, else geometric. */
+void readVerticalRate(const JsonObject& plane, Aircraft* ac) {
+  float rate = 0.0f;
+  ac->has_vrate = readJsonFloat(plane, "baro_rate", &rate) ||
+                  readJsonFloat(plane, "geom_rate", &rate);
+  if (rate > 32000.0f) rate = 32000.0f;
+  if (rate < -32000.0f) rate = -32000.0f;
+  ac->vrate_fpm = ac->has_vrate ? static_cast<int16_t>(lroundf(rate)) : 0;
+}
+
+/** Squawk 7500/7600/7700 wins; otherwise the feed's "emergency" field. */
+void readEmergency(const JsonObject& plane, Aircraft* ac) {
+  copyJsonStringTrimmed(plane, "squawk", ac->squawk, sizeof(ac->squawk));
+  ac->emergency = Emergency::None;
+  if (strcmp(ac->squawk, "7700") == 0) {
+    ac->emergency = Emergency::General;
+  } else if (strcmp(ac->squawk, "7600") == 0) {
+    ac->emergency = Emergency::Radio;
+  } else if (strcmp(ac->squawk, "7500") == 0) {
+    ac->emergency = Emergency::Hijack;
+  } else if (plane["emergency"].is<const char*>()) {
+    const char* e = plane["emergency"].as<const char*>();
+    if (strcmp(e, "nordo") == 0) {
+      ac->emergency = Emergency::Radio;
+    } else if (strcmp(e, "unlawful") == 0) {
+      ac->emergency = Emergency::Hijack;
+    } else if (strcmp(e, "general") == 0 || strcmp(e, "lifeguard") == 0 ||
+               strcmp(e, "minfuel") == 0 || strcmp(e, "downed") == 0) {
+      ac->emergency = Emergency::General;
+    }
+  }
+}
+
 void fillTagFields(Aircraft* ac, const JsonObject& plane) {
   copyJsonStringTrimmed(plane, "hex", ac->hex, sizeof(ac->hex));
   copyJsonStringTrimmed(plane, "flight", ac->callsign, sizeof(ac->callsign));
@@ -235,6 +268,8 @@ void fillTagFields(Aircraft* ac, const JsonObject& plane) {
   copyJsonStringTrimmed(plane, "t", ac->type, sizeof(ac->type));
   copyJsonStringTrimmed(plane, "desc", ac->desc, sizeof(ac->desc));
   readAltitude(plane, ac);
+  readVerticalRate(plane, ac);
+  readEmergency(plane, ac);
 }
 
 }  // namespace
@@ -299,7 +334,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   for (const char* key :
        {"lat", "lon", "true_heading", "mag_heading", "track", "dir", "gs",
         "tas", "ias", "alt_baro", "alt_geom", "seen_pos", "flight", "hex", "t",
-        "category", "desc"}) {
+        "category", "desc", "squawk", "emergency", "baro_rate", "geom_rate"}) {
     f[key] = true;
   }
 
@@ -395,6 +430,13 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
       parsed[n].pos_age_ms = static_cast<uint32_t>(seen_pos * 1000.0f);
 
       fillTagFields(&parsed[n], plane);
+#ifdef PLANE_RADAR_FAKE_SQUAWK
+      // Test build only: show the first aircraft as squawking 7700.
+      if (n == 0) {
+        snprintf(parsed[n].squawk, sizeof(parsed[n].squawk), "7700");
+        parsed[n].emergency = Emergency::General;
+      }
+#endif
       ++n;
     }
   }

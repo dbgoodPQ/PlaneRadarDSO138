@@ -11,6 +11,7 @@
 #include "config.h"
 #include "services/adsb_client.h"
 #include "services/radar_location.h"
+#include "services/wifi_conn.h"
 #include "ui/detail_panel.h"
 #include "ui/perf.h"
 #include "ui/radar_draw.h"
@@ -62,6 +63,7 @@ struct PlaneItem {
 };
 
 struct DotItem {
+  uint8_t index;  // into s_planes
   int16_t x;
   int16_t y;
   uint32_t color;
@@ -117,6 +119,54 @@ lv_timer_t* s_timer = nullptr;
 
 bool s_settings_requested = false;
 bool s_range_pressed = false;  // range label drawn inverted while touched
+bool s_blink_on = false;       // emergency symbols alternate each refresh
+
+detail_panel::Summary s_summary = {};
+
+// Feed status corner (bottom-left): text and dot colour.
+constexpr lv_area_t kStatusRect = {
+    radar::kStatusX, radar::kAreaHeight - radar::kStatusHeight - 1,
+    radar::kStatusX + radar::kStatusWidth - 1, radar::kAreaHeight - 2};
+char s_status_text[24] = "";
+uint32_t s_status_rgb = radar::kColorStatusDown;
+
+bool isEmergency(const services::adsb::Aircraft& plane) {
+  return plane.emergency != services::adsb::Emergency::None;
+}
+
+/** Third tag line: altitude (+ climb/descent arrow) or the emergency code. */
+struct TagLine3 {
+  char text[16];
+  uint32_t rgb;
+  int arrow;  // +1 climbing, -1 descending, 0 none
+};
+
+void tagLine3(const services::adsb::Aircraft& plane, TagLine3* out) {
+  out->arrow = 0;
+  if (isEmergency(plane)) {
+    const char* label = services::adsb::emergencyShort(plane.emergency);
+    if (plane.squawk[0] != 0) {
+      snprintf(out->text, sizeof(out->text), "%s %s", plane.squawk, label);
+    } else {
+      snprintf(out->text, sizeof(out->text), "%s", label);
+    }
+    out->rgb = radar::kColorEmergency;
+    return;
+  }
+  snprintf(out->text, sizeof(out->text), "%s", plane.alt);
+  out->rgb = radar::kColorTagAltitude;
+  if (plane.has_vrate && std::abs(plane.vrate_fpm) >= radar::kVrateLevelFpm) {
+    out->arrow = plane.vrate_fpm > 0 ? 1 : -1;
+  }
+}
+
+int tagLine3Width(const TagLine3& l, const lv_font_t* font) {
+  int w = l.text[0] != 0 ? radar::draw::textSize(l.text, font).x : 0;
+  if (l.arrow != 0) {
+    w += radar::kTagArrowGapPx + radar::kTagArrowWidthPx;
+  }
+  return w;
+}
 
 /**
  * Dead-reckon an aircraft's position from its last-fetched fix along its ground
@@ -263,19 +313,24 @@ void placeTags() {
        radar::kGearMarginPx + radar::kGearButtonSize - 1},
       {radar::kAreaWidth - radar::kRangeButtonWidth, 0, radar::kAreaWidth - 1,
        radar::kRangeButtonHeight - 1},
+      kStatusRect,
   };
   static lv_area_t placed[services::adsb::kMaxAircraft];
   size_t placed_n = 0;
 
-  // Priority: selected, then nearest first (s_items is sorted far first).
+  // Priority: selected, then emergencies, then the rest; nearest first within
+  // each group (s_items is sorted far first).
   uint8_t order[services::adsb::kMaxAircraft];
   size_t order_n = 0;
   if (s_selected_item >= 0) {
     order[order_n++] = static_cast<uint8_t>(s_selected_item);
   }
-  for (int d = static_cast<int>(s_item_count) - 1; d >= 0; --d) {
-    if (d != s_selected_item) {
-      order[order_n++] = static_cast<uint8_t>(d);
+  for (const bool want_emergency : {true, false}) {
+    for (int d = static_cast<int>(s_item_count) - 1; d >= 0; --d) {
+      if (d != s_selected_item &&
+          isEmergency(s_planes[s_items[d].index]) == want_emergency) {
+        order[order_n++] = static_cast<uint8_t>(d);
+      }
     }
   }
 
@@ -307,8 +362,10 @@ void placeTags() {
     PlaneItem& it = s_items[d];
     const services::adsb::Aircraft& plane = s_planes[it.index];
 
-    int full_w = 0;
-    for (const char* s : {plane.callsign, plane.type, plane.alt}) {
+    TagLine3 line3;
+    tagLine3(plane, &line3);
+    int full_w = tagLine3Width(line3, font);
+    for (const char* s : {plane.callsign, plane.type}) {
       if (s[0] != 0) {
         full_w = std::max(full_w, static_cast<int>(radar::draw::textSize(s, font).x));
       }
@@ -400,6 +457,9 @@ lv_area_t dotBox(const DotItem& d) {
 }
 
 uint32_t planeColor(const services::adsb::Aircraft& plane) {
+  if (isEmergency(plane)) {
+    return s_blink_on ? radar::kColorEmergency : radar::kColorEmergencyBlink;
+  }
   return radar::altitudeColor(plane.on_ground, plane.has_alt, plane.alt_ft);
 }
 
@@ -424,6 +484,8 @@ void computeAircraft() {
 
   s_item_count = 0;
   s_dot_count = 0;
+  s_summary = detail_panel::Summary{};
+  float nearest_km = 0.0f;
   s_selected_seen = false;
   s_selected_item = -1;
   int selected_index = -1;
@@ -437,6 +499,17 @@ void computeAircraft() {
     float dy_km = 0.0f;
     float dist_km = 0.0f;
     radar::offsetKmFromCenter(lat, lon, &dx_km, &dy_km, &dist_km);
+
+    if (isEmergency(s_planes[i])) {
+      ++s_summary.emergencies;
+    }
+    if (!s_summary.has_nearest || dist_km < nearest_km) {
+      nearest_km = dist_km;
+      s_summary.has_nearest = true;
+      s_summary.nearest_km = dist_km;
+      snprintf(s_summary.nearest, sizeof(s_summary.nearest), "%s",
+               s_planes[i].callsign);
+    }
 
     if (s_selected_hex[0] != '\0' &&
         strcmp(s_planes[i].hex, s_selected_hex) == 0) {
@@ -461,6 +534,7 @@ void computeAircraft() {
     }
 
     DotItem dot;
+    dot.index = static_cast<uint8_t>(i);
     dot.color = planeColor(s_planes[i]);
     dot.selected = static_cast<int>(i) == selected_index;
     if (beyondRingDot(dx_km, dy_km, dist_km, &dot)) {
@@ -484,6 +558,29 @@ void computeAircraft() {
   for (size_t d = 0; d < s_item_count; ++d) {
     computeBox(&s_items[d]);
   }
+  s_summary.in_range = static_cast<uint16_t>(s_item_count);
+  s_summary.beyond = static_cast<uint16_t>(s_dot_count);
+
+  // Feed status corner: dot colour, aircraft count, data age.
+  const unsigned long last = services::adsb::lastUpdateMs();
+  const unsigned long age_ms = last == 0 ? 0 : millis() - last;
+  char age[8];
+  if (last == 0) {
+    snprintf(age, sizeof(age), "--");
+  } else if (age_ms < 100000) {
+    snprintf(age, sizeof(age), "%lus", age_ms / 1000);
+  } else {
+    snprintf(age, sizeof(age), "%lum", age_ms / 60000);
+  }
+  snprintf(s_status_text, sizeof(s_status_text), "%u \xC2\xB7 %s",
+           static_cast<unsigned>(n), age);
+  if (!services::wifi::connected() || last == 0 || age_ms >= radar::kStatusStaleMs) {
+    s_status_rgb = radar::kColorStatusDown;
+  } else if (age_ms >= radar::kStatusFreshMs) {
+    s_status_rgb = radar::kColorStatusStale;
+  } else {
+    s_status_rgb = radar::kColorStatusOk;
+  }
 }
 
 void clearSelection() {
@@ -495,7 +592,7 @@ void clearSelection() {
 
 void updatePanel() {
   if (s_selected_hex[0] == '\0') {
-    detail_panel::showHint();
+    detail_panel::showIdle(s_summary);
     return;
   }
   if (s_selected_seen) {
@@ -506,7 +603,7 @@ void updatePanel() {
     }
     if (millis() - s_selected_lost_ms >= radar::kSelectLostClearMs) {
       clearSelection();
-      detail_panel::showHint();
+      detail_panel::showIdle(s_summary);
       return;
     }
   }
@@ -590,6 +687,7 @@ void refresh() {
     runway::update();
     s_full_redraw = true;
   }
+  s_blink_on = !s_blink_on;
   computeAircraft();
   updatePanel();
   perf::addCompute(micros() - t0);
@@ -599,6 +697,7 @@ void refresh() {
       s_full_redraw = false;
     } else {
       invalidateChanges();
+      invalidateBox(kStatusRect);
     }
     rememberFrame();
   }
@@ -654,6 +753,14 @@ void drawLabels(lv_layer_t* layer, int ox, int oy) {
   const int distance = static_cast<int>(lroundf(miles ? ring3_km / 1.609344f : ring3_km));
   char range[16];
   snprintf(range, sizeof(range), "%d %s", distance, miles ? "mi" : "km");
+  // Feed status corner, bottom left.
+  const int status_cy = oy + (kStatusRect.y1 + kStatusRect.y2) / 2;
+  radar::draw::fillCircle(layer, ox + kStatusRect.x1 + radar::kStatusDotRadiusPx + 1,
+                          status_cy, radar::kStatusDotRadiusPx, s_status_rgb);
+  radar::draw::text(layer, s_status_text, radar::fontSmall(), radar::kColorPanelDim,
+                    ox + kStatusRect.x1 + radar::kStatusDotRadiusPx * 2 + 5,
+                    status_cy, HAlign::Left, VAlign::Middle);
+
   radar::draw::text(
       layer, range, radar::fontLarge(),
       s_range_pressed ? radar::kColorBackground : radar::kColorLabel,
@@ -701,9 +808,26 @@ void drawTag(lv_layer_t* layer, int ox, int oy, const PlaneItem& it,
                       VAlign::Top);
   }
   y += line_h;
-  if (plane.alt[0] != 0) {
-    radar::draw::text(layer, plane.alt, font, radar::kColorTagAltitude, x, y, h,
-                      VAlign::Top);
+  TagLine3 line3;
+  tagLine3(plane, &line3);
+  const int arrow_w =
+      line3.arrow != 0 ? radar::kTagArrowGapPx + radar::kTagArrowWidthPx : 0;
+  // Right-aligned tags: the arrow takes the right end, the text sits before it.
+  int text_x = it.tag_right_align ? x - arrow_w : x;
+  int text_right = text_x;
+  if (line3.text[0] != 0) {
+    const lv_area_t a = radar::draw::text(layer, line3.text, font, line3.rgb,
+                                          text_x, y, h, VAlign::Top);
+    text_right = a.x2 + 1;
+  }
+  if (line3.arrow != 0) {
+    const int ax = text_right + radar::kTagArrowGapPx;
+    const int cy = y + line_h / 2;
+    const int hh = radar::kTagArrowWidthPx / 2;
+    const int tip = line3.arrow > 0 ? cy - hh : cy + hh;
+    const int base = line3.arrow > 0 ? cy + hh : cy - hh;
+    radar::draw::fillTriangle(layer, ax, base, ax + radar::kTagArrowWidthPx, base,
+                              ax + hh, tip, line3.rgb);
   }
 }
 
@@ -786,10 +910,21 @@ void selectAt(int x, int y) {
       best = static_cast<int>(d);
     }
   }
-  if (best < 0) {
+  // Rim dots (traffic beyond the ring) can be selected too.
+  int best_plane = best >= 0 ? s_items[best].index : -1;
+  for (size_t d = 0; d < s_dot_count; ++d) {
+    const int dx = s_dots[d].x - x;
+    const int dy = s_dots[d].y - y;
+    const int d_sq = dx * dx + dy * dy;
+    if (d_sq <= best_d_sq) {
+      best_d_sq = d_sq;
+      best_plane = s_dots[d].index;
+    }
+  }
+  if (best_plane < 0) {
     clearSelection();
   } else {
-    const services::adsb::Aircraft& plane = s_planes[s_items[best].index];
+    const services::adsb::Aircraft& plane = s_planes[best_plane];
     strncpy(s_selected_hex, plane.hex, sizeof(s_selected_hex) - 1);
     s_selected_hex[sizeof(s_selected_hex) - 1] = '\0';
     s_selected_lost_ms = 0;

@@ -98,6 +98,27 @@ constexpr uint32_t kColorPanelDim = 0x8A96A8;
 constexpr uint32_t kColorPanelText = 0xE6EAF0;
 constexpr uint32_t kColorPanelWarning = 0xFFA040;
 
+/** Emergency planes: symbol alternates between these each refresh. */
+constexpr uint32_t kColorEmergency = 0xFF2020;
+constexpr uint32_t kColorEmergencyBlink = 0xFFFFFF;
+
+/** Climb/descent below this rate counts as level (no arrow, "level"). */
+constexpr int kVrateLevelFpm = 300;
+/** Climb/descent arrow after the altitude in the tag. */
+constexpr int kTagArrowWidthPx = 6;
+constexpr int kTagArrowGapPx = 2;
+
+/** Feed status corner, bottom-left of the radar area. */
+constexpr int kStatusX = 2;
+constexpr int kStatusWidth = 74;
+constexpr int kStatusHeight = 16;
+constexpr int kStatusDotRadiusPx = 3;
+constexpr unsigned long kStatusFreshMs = 15000;
+constexpr unsigned long kStatusStaleMs = 60000;
+constexpr uint32_t kColorStatusOk = 0x30D050;
+constexpr uint32_t kColorStatusStale = 0xFFA040;
+constexpr uint32_t kColorStatusDown = 0xFF4040;
+
 /** Selected plane's tag background; range label while pressed. */
 constexpr uint32_t kColorSelectedTagBg = 0x1C2630;
 constexpr uint32_t kColorRangePressedBg = 0x30D050;
