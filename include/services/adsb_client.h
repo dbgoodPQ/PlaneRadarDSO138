@@ -80,15 +80,13 @@ constexpr size_t kMaxAircraft = 64;
 void init();
 
 /**
- * Copy the current aircraft into `out` (up to `max_out`) and report the fetch
- * timestamp, all under a lock — safe to call from a different thread than the
- * one running fetchUpdate(). Returns the number copied.
+ * Two buffers: the fetch task parses into one while the UI reads the other.
+ * takeLatest() hands the UI the newest finished list (swapping buffers when a
+ * new one is ready) and reports its fetch time. The returned list stays valid
+ * and unchanged until the next takeLatest() call. One caller only (the UI on
+ * the loop task).
  */
-size_t snapshotAircraft(Aircraft* out, size_t max_out,
-                        unsigned long* out_last_update_ms);
-
-size_t aircraftCount();
-const Aircraft* aircraftList();
+const Aircraft* takeLatest(size_t* count, unsigned long* out_last_update_ms);
 
 /**
  * millis() timestamp of the last successful fetch (0 before the first). The

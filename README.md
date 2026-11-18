@@ -101,6 +101,12 @@ Layout and colors: `include/ui/radar_theme.h`.
 
 Preset and miles/km choice persist across reboot (`planeradar` NVS namespace).
 
+### Trails
+
+- Each aircraft inside the radar leaves a fading line through its last ~1 minute of real positions (12 fixes, one per fetch), in its altitude colour; up to 32 trails at once
+- The selected plane's trail is brighter and wider; emergency trails are steady red
+- Trails are cleared when the radar location changes
+
 ### Runways
 
 - Major airports from OurAirports (`large_airport`), plus CYMX; all open runway strips in range (helipads excluded)

@@ -120,6 +120,15 @@ constexpr uint32_t kColorStatusStale = 0xFFA040;
 constexpr uint32_t kColorStatusDown = 0xFF4040;
 
 /** Selected plane's tag background; range label while pressed. */
+// Trails: plane colour faded into the background, oldest segment faintest
+// (alpha 0..255). The selected plane's trail is brighter and wider.
+constexpr int kTrailAlphaOldest = 40;
+constexpr int kTrailAlphaNewest = 140;
+constexpr int kTrailSelectedAlphaOldest = 80;
+constexpr int kTrailSelectedAlphaNewest = 255;
+constexpr int kTrailWidthPx = 1;
+constexpr int kTrailSelectedWidthPx = 2;
+
 constexpr uint32_t kColorSelectedTagBg = 0x1C2630;
 constexpr uint32_t kColorRangePressedBg = 0x30D050;
 

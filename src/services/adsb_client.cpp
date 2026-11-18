@@ -23,25 +23,51 @@ constexpr float kKmPerNm = 1.852f;
 constexpr int kConnectTimeoutMs = 5000;  // TLS handshake needs room
 constexpr unsigned long kRequestTimeoutMs = 6000;
 
-Aircraft s_aircraft[kMaxAircraft];
-size_t s_aircraft_count = 0;
+// Double buffer (~7 KB each). s_front is the UI's; the other one is the fetch
+// task's. They swap in takeLatest(), only while s_ready is set (no parse is
+// writing the back buffer then).
+Aircraft s_buffers[2][kMaxAircraft];
+uint8_t s_front = 0;
+size_t s_front_count = 0;
+unsigned long s_front_update_ms = 0;
+size_t s_back_count = 0;
+unsigned long s_back_update_ms = 0;
+bool s_ready = false;        // back buffer holds a finished, untaken list
+bool s_clear_pending = false;  // clear(): the UI's next take returns nothing
 unsigned long s_last_update_ms = 0;
 PollFn s_poll_fn = nullptr;
 SemaphoreHandle_t s_mutex = nullptr;
 
-/** Publish parsed aircraft to the shared buffer atomically. */
-void publish(const Aircraft* src, size_t count) {
+void lock() {
   if (s_mutex != nullptr) {
     xSemaphoreTake(s_mutex, portMAX_DELAY);
   }
-  for (size_t i = 0; i < count; ++i) {
-    s_aircraft[i] = src[i];
-  }
-  s_aircraft_count = count;
-  s_last_update_ms = millis();  // base time for dead-reckoning
+}
+
+void unlock() {
   if (s_mutex != nullptr) {
     xSemaphoreGive(s_mutex);
   }
+}
+
+/** Fetch task: claim the back buffer (drops a list the UI never took). */
+Aircraft* beginParse() {
+  lock();
+  s_ready = false;
+  Aircraft* back = s_buffers[s_front ^ 1];
+  unlock();
+  return back;
+}
+
+/** Fetch task: the back buffer is complete; offer it to the UI. */
+void publish(size_t count) {
+  lock();
+  s_back_count = count;
+  s_back_update_ms = millis();  // base time for dead-reckoning
+  s_last_update_ms = s_back_update_ms;
+  s_ready = true;
+  s_clear_pending = false;
+  unlock();
 }
 
 void pollNetwork() {
@@ -283,39 +309,34 @@ void init() {
 void setPollFn(PollFn fn) { s_poll_fn = fn; }
 
 void clear() {
-  if (s_mutex != nullptr) {
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
-  }
-  s_aircraft_count = 0;
+  lock();
+  s_ready = false;
+  s_clear_pending = true;
   s_last_update_ms = 0;
-  if (s_mutex != nullptr) {
-    xSemaphoreGive(s_mutex);
-  }
+  unlock();
 }
-
-size_t aircraftCount() { return s_aircraft_count; }
-
-const Aircraft* aircraftList() { return s_aircraft; }
 
 unsigned long lastUpdateMs() { return s_last_update_ms; }
 
-size_t snapshotAircraft(Aircraft* out, size_t max_out,
-                        unsigned long* out_last_update_ms) {
-  if (s_mutex != nullptr) {
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
+const Aircraft* takeLatest(size_t* count, unsigned long* out_last_update_ms) {
+  lock();
+  if (s_ready) {
+    s_front ^= 1;
+    s_front_count = s_back_count;
+    s_front_update_ms = s_back_update_ms;
+    s_ready = false;
+  } else if (s_clear_pending) {
+    s_front_count = 0;
+    s_front_update_ms = 0;
+    s_clear_pending = false;
   }
-  const size_t count =
-      s_aircraft_count < max_out ? s_aircraft_count : max_out;
-  for (size_t i = 0; i < count; ++i) {
-    out[i] = s_aircraft[i];
-  }
+  *count = s_front_count;
   if (out_last_update_ms != nullptr) {
-    *out_last_update_ms = s_last_update_ms;
+    *out_last_update_ms = s_front_update_ms;
   }
-  if (s_mutex != nullptr) {
-    xSemaphoreGive(s_mutex);
-  }
-  return count;
+  const Aircraft* front = s_buffers[s_front];
+  unlock();
+  return front;
 }
 
 bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
@@ -396,11 +417,9 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
     return false;
   }
 
-  // Parse into a local buffer, then publish atomically so a reader on another
-  // thread never sees a half-updated list.
-  // Static: ~6 KB is too much for the fetch task's stack (only that task
-  // calls fetchUpdate()).
-  static Aircraft parsed[kMaxAircraft];
+  // Parse into the back buffer; the UI keeps reading the front one until
+  // publish() offers this list and the UI swaps.
+  Aircraft* parsed = beginParse();
   size_t n = 0;
   JsonArray ac = doc["ac"].as<JsonArray>();
   if (!ac.isNull()) {
@@ -441,7 +460,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
     }
   }
 
-  publish(parsed, n);
+  publish(n);
   Serial.printf("adsb: %u aircraft\n", static_cast<unsigned>(n));
   return true;
 }

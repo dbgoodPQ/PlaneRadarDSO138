@@ -20,6 +20,7 @@
 #include "ui/radar_range.h"
 #include "ui/radar_theme.h"
 #include "ui/runway_overlay.h"
+#include "ui/trails.h"
 
 namespace ui::radar_screen {
 
@@ -57,8 +58,17 @@ struct PlaneItem {
   lv_area_t tag;
   uint8_t tag_lines;
   bool tag_right_align;
-  // Everything drawn for this plane (symbol, vector, tag, selection ring),
-  // radar-area coordinates: the area to redraw when it moves.
+  // Trail: the newest `trail_n` fixes of `trail` that lie inside the outer
+  // ring. The segment from the newest fix to the symbol is part of `box`
+  // (it moves every refresh); the rest only changes when a fix is added.
+  const trails::Trail* trail;
+  uint8_t trail_n;
+  uint8_t trail_ver;
+  uint32_t trail_rgb;
+  lv_area_t trail_box;
+  // Everything drawn for this plane (symbol, vector, tag, selection ring,
+  // live trail segment), radar-area coordinates: the area to redraw when it
+  // moves.
   lv_area_t box;
 };
 
@@ -70,7 +80,8 @@ struct DotItem {
   bool selected;
 };
 
-services::adsb::Aircraft s_planes[services::adsb::kMaxAircraft];
+// The UI's half of the adsb double buffer (unchanged until the next take).
+const services::adsb::Aircraft* s_planes = nullptr;
 PlaneItem s_items[services::adsb::kMaxAircraft];
 size_t s_item_count = 0;
 DotItem s_dots[services::adsb::kMaxAircraft];
@@ -80,6 +91,11 @@ size_t s_dot_count = 0;
 struct PrevPlane {
   char hex[sizeof(services::adsb::Aircraft::hex)];
   lv_area_t box;
+  lv_area_t trail_box;
+  uint32_t trail_rgb;
+  uint8_t trail_n;
+  uint8_t trail_ver;
+  bool selected;
 };
 PrevPlane s_prev_planes[services::adsb::kMaxAircraft];
 size_t s_prev_plane_count = 0;
@@ -120,6 +136,7 @@ lv_timer_t* s_timer = nullptr;
 bool s_settings_requested = false;
 bool s_range_pressed = false;  // range label drawn inverted while touched
 bool s_blink_on = false;       // emergency symbols alternate each refresh
+float s_px_per_trail_unit = 0.0f;  // trail units (10 m) -> pixels at this range
 
 detail_panel::Summary s_summary = {};
 
@@ -421,6 +438,55 @@ void placeTags() {
   }
 }
 
+void trailPointToScreen(const trails::Point& p, int* x, int* y) {
+  *x = radar::kCenterX + static_cast<int>(lroundf(p.e * s_px_per_trail_unit));
+  *y = radar::kCenterY - static_cast<int>(lroundf(p.n * s_px_per_trail_unit));
+}
+
+/** Trail colour: altitude band, or steady red for emergencies (no blink). */
+uint32_t trailColor(const services::adsb::Aircraft& plane) {
+  if (plane.emergency != services::adsb::Emergency::None) {
+    return radar::kColorEmergency;
+  }
+  return radar::altitudeColor(plane.on_ground, plane.has_alt, plane.alt_ft);
+}
+
+/** Newest fixes that lie inside the outer ring, and their bounding box. */
+void computeTrail(PlaneItem* item, const services::adsb::Aircraft& plane) {
+  item->trail = trails::find(plane.hex);
+  item->trail_n = 0;
+  item->trail_ver = 0;
+  item->trail_rgb = trailColor(plane);
+  item->trail_box = {0, 0, -1, -1};
+  if (item->trail == nullptr) {
+    return;
+  }
+  const int max_r_sq = radar::kGridOuterRadius * radar::kGridOuterRadius;
+  int x1 = INT16_MAX;
+  int y1 = INT16_MAX;
+  int x2 = INT16_MIN;
+  int y2 = INT16_MIN;
+  for (int k = item->trail->count - 1; k >= 0; --k) {
+    int x = 0;
+    int y = 0;
+    trailPointToScreen(item->trail->points[k], &x, &y);
+    if (radar::distSqFromCenter(x, y) > max_r_sq) {
+      break;  // older fixes are outside the radar: stop the trail here
+    }
+    ++item->trail_n;
+    x1 = std::min(x1, x);
+    x2 = std::max(x2, x);
+    y1 = std::min(y1, y);
+    y2 = std::max(y2, y);
+  }
+  if (item->trail_n == 0) {
+    return;
+  }
+  item->trail_ver = item->trail->version;
+  constexpr int kPad = radar::kTrailSelectedWidthPx + 2;  // width + antialiasing
+  item->trail_box = {x1 - kPad, y1 - kPad, x2 + kPad, y2 + kPad};
+}
+
 /** Bounding box of everything drawn for the plane (+ antialiasing margin). */
 void computeBox(PlaneItem* item) {
   const int ring = radar::kSelectRingRadiusPx + radar::kSelectRingWidthPx;
@@ -438,6 +504,15 @@ void computeBox(PlaneItem* item) {
   x2 = std::max<int>({x2, item->vx0, item->vx1});
   y1 = std::min<int>({y1, item->vy0, item->vy1});
   y2 = std::max<int>({y2, item->vy0, item->vy1});
+  if (item->trail_n > 0) {
+    int lx = 0;
+    int ly = 0;
+    trailPointToScreen(item->trail->points[item->trail->count - 1], &lx, &ly);
+    x1 = std::min(x1, lx);
+    x2 = std::max(x2, lx);
+    y1 = std::min(y1, ly);
+    y2 = std::max(y2, ly);
+  }
   if (item->tag_lines != 0) {
     x1 = std::min<int>(x1, item->tag.x1);
     x2 = std::max<int>(x2, item->tag.x2);
@@ -476,11 +551,14 @@ bool beyondRingDot(float dx_km, float dy_km, float dist_km, DotItem* out) {
 }
 
 void computeAircraft() {
-  // Snapshot under the adsb lock (the fetch runs on another task).
+  // Newest list from the fetch task (a buffer swap, no copy).
   unsigned long base_ms = 0;
-  const size_t n = services::adsb::snapshotAircraft(
-      s_planes, services::adsb::kMaxAircraft, &base_ms);
+  size_t n = 0;
+  s_planes = services::adsb::takeLatest(&n, &base_ms);
+  const bool record_trails = trails::beginRecord(base_ms);
   const float inner_max_km = innerRingMaxKm();
+  s_px_per_trail_unit = static_cast<float>(radar::kGridOuterRadius) /
+                        radar::rangeCurrent().outer_km / 100.0f;
 
   s_item_count = 0;
   s_dot_count = 0;
@@ -524,6 +602,9 @@ void computeAircraft() {
       int x = 0;
       int y = 0;
       radar::latLonToScreen(lat, lon, &x, &y);
+      if (record_trails) {
+        trails::add(s_planes[i]);  // only aircraft inside the radar get trails
+      }
       PlaneItem& item = s_items[s_item_count++];
       item.index = static_cast<uint8_t>(i);
       item.x = x;
@@ -556,6 +637,7 @@ void computeAircraft() {
   }
   placeTags();
   for (size_t d = 0; d < s_item_count; ++d) {
+    computeTrail(&s_items[d], s_planes[s_items[d].index]);
     computeBox(&s_items[d]);
   }
   s_summary.in_range = static_cast<uint16_t>(s_item_count);
@@ -634,24 +716,43 @@ bool containsDot(const DotItem* dots, size_t n, const DotItem& d) {
  * Redraw only what moved: each plane's old and new box (merged into one area,
  * matched by hex), and the rim dots that appeared or disappeared.
  */
+bool sameArea(const lv_area_t& a, const lv_area_t& b) {
+  return a.x1 == b.x1 && a.y1 == b.y1 && a.x2 == b.x2 && a.y2 == b.y2;
+}
+
 void invalidateChanges() {
   bool prev_used[services::adsb::kMaxAircraft] = {};
   for (size_t d = 0; d < s_item_count; ++d) {
-    lv_area_t box = s_items[d].box;
-    const char* hex = s_planes[s_items[d].index].hex;
+    const PlaneItem& it = s_items[d];
+    const bool selected = static_cast<int>(d) == s_selected_item;
+    lv_area_t box = it.box;
+    // The trail is redrawn only when it changed (new fix, colour, selection).
+    bool trail_changed = it.trail_n > 0;
+    const char* hex = s_planes[it.index].hex;
     for (size_t p = 0; p < s_prev_plane_count; ++p) {
-      if (!prev_used[p] && hex[0] != 0 &&
-          strcmp(s_prev_planes[p].hex, hex) == 0) {
+      const PrevPlane& prev = s_prev_planes[p];
+      if (!prev_used[p] && hex[0] != 0 && strcmp(prev.hex, hex) == 0) {
         prev_used[p] = true;
-        box = radar::draw::joined(box, s_prev_planes[p].box);
+        box = radar::draw::joined(box, prev.box);
+        trail_changed = it.trail_n != prev.trail_n || it.trail_ver != prev.trail_ver ||
+                        it.trail_rgb != prev.trail_rgb || selected != prev.selected ||
+                        (it.trail_n > 0 && !sameArea(it.trail_box, prev.trail_box));
+        if (trail_changed && prev.trail_n > 0) {
+          box = radar::draw::joined(box, prev.trail_box);
+        }
         break;
       }
+    }
+    if (trail_changed && it.trail_n > 0) {
+      box = radar::draw::joined(box, it.trail_box);
     }
     invalidateBox(box);
   }
   for (size_t p = 0; p < s_prev_plane_count; ++p) {
     if (!prev_used[p]) {
-      invalidateBox(s_prev_planes[p].box);
+      const PrevPlane& prev = s_prev_planes[p];
+      invalidateBox(prev.trail_n > 0 ? radar::draw::joined(prev.box, prev.trail_box)
+                                     : prev.box);
     }
   }
   for (size_t i = 0; i < s_dot_count; ++i) {
@@ -672,6 +773,11 @@ void rememberFrame() {
     memcpy(s_prev_planes[d].hex, s_planes[s_items[d].index].hex,
            sizeof(s_prev_planes[d].hex));
     s_prev_planes[d].box = s_items[d].box;
+    s_prev_planes[d].trail_box = s_items[d].trail_box;
+    s_prev_planes[d].trail_rgb = s_items[d].trail_rgb;
+    s_prev_planes[d].trail_n = s_items[d].trail_n;
+    s_prev_planes[d].trail_ver = s_items[d].trail_ver;
+    s_prev_planes[d].selected = static_cast<int>(d) == s_selected_item;
   }
   s_prev_dot_count = s_dot_count;
   memcpy(s_prev_dots, s_dots, sizeof(DotItem) * s_dot_count);
@@ -683,6 +789,9 @@ void refresh() {
                          radar::showRunways(), services::location::lat(),
                          services::location::lon()};
   if (!(bg == s_background)) {
+    if (bg.lat != s_background.lat || bg.lon != s_background.lon) {
+      trails::clear();  // stored as offsets from the old centre
+    }
     s_background = bg;
     runway::update();
     s_full_redraw = true;
@@ -779,6 +888,51 @@ void drawPlane(lv_layer_t* layer, int ox, int oy, const PlaneItem& it) {
                             it.color);
 }
 
+/** `rgb` blended over the radar background; alpha 0..255. */
+uint32_t fade(uint32_t rgb, int alpha) {
+  const uint32_t bg = radar::kColorBackground;
+  uint32_t out = 0;
+  for (int shift = 0; shift <= 16; shift += 8) {
+    const int c = static_cast<int>((rgb >> shift) & 0xFF);
+    const int b = static_cast<int>((bg >> shift) & 0xFF);
+    out |= static_cast<uint32_t>(b + (c - b) * alpha / 255) << shift;
+  }
+  return out;
+}
+
+/** Fading polyline through the stored fixes, then on to the symbol. */
+void drawTrail(lv_layer_t* layer, int ox, int oy, const PlaneItem& it,
+               bool selected) {
+  if (it.trail_n == 0) {
+    return;
+  }
+  lv_area_t area = radar::draw::joined(it.trail_box, it.box);
+  lv_area_move(&area, ox, oy);
+  if (!radar::draw::onStrip(layer, area)) {
+    return;
+  }
+  const int lo = selected ? radar::kTrailSelectedAlphaOldest : radar::kTrailAlphaOldest;
+  const int hi = selected ? radar::kTrailSelectedAlphaNewest : radar::kTrailAlphaNewest;
+  const int width = selected ? radar::kTrailSelectedWidthPx : radar::kTrailWidthPx;
+  const int first = it.trail->count - it.trail_n;
+  const int segments = it.trail_n;  // stored segments + the live one
+  int px = 0;
+  int py = 0;
+  trailPointToScreen(it.trail->points[first], &px, &py);
+  for (int k = first + 1; k <= it.trail->count; ++k) {
+    int qx = it.x;  // last segment: newest fix -> symbol
+    int qy = it.y;
+    if (k < it.trail->count) {
+      trailPointToScreen(it.trail->points[k], &qx, &qy);
+    }
+    const int alpha = lo + (hi - lo) * (k - first) / segments;
+    radar::draw::line(layer, ox + px, oy + py, ox + qx, oy + qy, width,
+                      fade(it.trail_rgb, alpha));
+    px = qx;
+    py = qy;
+  }
+}
+
 void drawTag(lv_layer_t* layer, int ox, int oy, const PlaneItem& it,
              bool selected) {
   if (it.tag_lines == 0) {
@@ -832,6 +986,16 @@ void drawTag(lv_layer_t* layer, int ox, int oy, const PlaneItem& it,
 }
 
 void drawAircraft(lv_layer_t* layer, int ox, int oy) {
+  // Trails under everything else; the selected one on top of the others.
+  for (size_t d = 0; d < s_item_count; ++d) {
+    if (static_cast<int>(d) != s_selected_item) {
+      drawTrail(layer, ox, oy, s_items[d], false);
+    }
+  }
+  if (s_selected_item >= 0) {
+    drawTrail(layer, ox, oy, s_items[s_selected_item], true);
+  }
+
   for (size_t d = 0; d < s_dot_count; ++d) {
     const DotItem& dot = s_dots[d];
     if (dot.selected) {
