@@ -4,7 +4,7 @@ name: Build
 
 on:
   push:
-    branches: [main, master, cyd-esp32-2432s028r]
+    branches: [main]
   pull_request:
   workflow_dispatch:
 

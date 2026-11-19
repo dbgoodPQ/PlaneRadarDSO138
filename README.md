@@ -138,7 +138,7 @@ pio test -e native
 
 | Workflow | When | Output |
 |----------|------|--------|
-| [Build](.github/workflows/build.yml) | Push to `main`, `master` or `cyd-esp32-2432s028r`; PRs; manual | Runs the unit tests, then builds. Artifact `plane-radar-cyd-<sha>`: merged `.bin`, split `.bin` files, `FLASHING.txt` |
+| [Build](.github/workflows/build.yml) | Push to `main`; PRs; manual | Runs the unit tests, then builds. Artifact `plane-radar-cyd-<sha>`: merged `.bin`, split `.bin` files, `FLASHING.txt` |
 | [Release](.github/workflows/release.yml) | Tag `v*` (e.g. `v2.0.0`) | GitHub Release with `plane-radar-cyd-<version>.bin` + `.sha256` |
 
 ## How it works
