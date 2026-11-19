@@ -84,13 +84,44 @@ bool isValidCallsign(const char* s) {
   return true;
 }
 
+/** Drop a UTF-8 character cut in half at the end of `s` (after truncation). */
+void trimPartialUtf8(char* s) {
+  size_t len = strlen(s);
+  size_t start = len;  // start of the last character
+  while (start > 0 && (static_cast<unsigned char>(s[start - 1]) & 0xC0) == 0x80) {
+    --start;
+  }
+  if (start == 0) {
+    return;
+  }
+  --start;
+  const unsigned char lead = static_cast<unsigned char>(s[start]);
+  const size_t need = lead >= 0xF0 ? 4 : lead >= 0xE0 ? 3 : lead >= 0xC0 ? 2 : 1;
+  if (len - start < need) {
+    s[start] = '\0';
+  }
+}
+
+/**
+ * Airport code (IATA, else ICAO) and place name for the panel:
+ * "City, Country", or just the city or the country when one is missing, or
+ * the code when both are.
+ */
 void copyAirport(const JsonObject& airport, char* code, size_t code_len,
-                 char* city, size_t city_len) {
+                 char* place, size_t place_len) {
   const char* iata = airport["iata_code"] | "";
   copyStr(code, code_len, iata[0] != '\0' ? iata : (airport["icao_code"] | ""));
-  if (city != nullptr) {
-    copyStr(city, city_len, airport["municipality"] | "");
+
+  const char* city = airport["municipality"] | "";
+  const char* country = airport["country_name"] | "";
+  if (city[0] != '\0' && country[0] != '\0') {
+    snprintf(place, place_len, "%s, %s", city, country);
+  } else if (city[0] != '\0' || country[0] != '\0') {
+    copyStr(place, place_len, city[0] != '\0' ? city : country);
+  } else {
+    copyStr(place, place_len, code);
   }
+  trimPartialUtf8(place);
 }
 
 /** Blocking HTTPS GET; fills `info`. Returns Found, NotFound or Failed. */
@@ -127,6 +158,7 @@ Status fetch(const char* callsign, Info* info) {
     fr[end]["iata_code"] = true;
     fr[end]["icao_code"] = true;
     fr[end]["municipality"] = true;
+    fr[end]["country_name"] = true;
   }
 
   JsonDocument doc;
@@ -143,12 +175,15 @@ Status fetch(const char* callsign, Info* info) {
     return Status::NotFound;
   }
   copyStr(info->airline, sizeof(info->airline), route["airline"]["name"] | "");
-  copyAirport(route["origin"].as<JsonObject>(), info->origin, sizeof(info->origin), nullptr, 0);
+  copyAirport(route["origin"].as<JsonObject>(), info->origin,
+              sizeof(info->origin), info->origin_place,
+              sizeof(info->origin_place));
   copyAirport(route["destination"].as<JsonObject>(), info->destination,
-              sizeof(info->destination), info->dest_city,
-              sizeof(info->dest_city));
-  Serial.printf("route %s: %s %s-%s\n", callsign, info->airline, info->origin,
-                info->destination);
+              sizeof(info->destination), info->dest_place,
+              sizeof(info->dest_place));
+  Serial.printf("route %s: %s %s-%s (%s - %s)\n", callsign, info->airline,
+                info->origin, info->destination, info->origin_place,
+                info->dest_place);
   return Status::Found;
 }
 

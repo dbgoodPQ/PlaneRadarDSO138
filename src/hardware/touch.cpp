@@ -40,8 +40,8 @@ bool calibrationLooksValid(const uint16_t* cal) {
 }
 
 /**
- * Load the calibration. It is only valid for the rotation it was made in, so a
- * changed kDisplayRotation forces a new calibration.
+ * Load the calibration. It is only valid for the rotation it was made in, so
+ * flipping the screen (Settings) forces a new calibration.
  */
 bool loadCalibration(uint16_t* cal) {
   Preferences prefs;
@@ -51,7 +51,7 @@ bool loadCalibration(uint16_t* cal) {
   const size_t len = prefs.getBytes(kNvsKeyCal, cal, kCalCount * sizeof(uint16_t));
   const int rot = prefs.getInt(kNvsKeyRot, -1);
   prefs.end();
-  return len == kCalCount * sizeof(uint16_t) && rot == config::kDisplayRotation &&
+  return len == kCalCount * sizeof(uint16_t) && rot == displayRotation() &&
          calibrationLooksValid(cal);
 }
 
@@ -59,7 +59,7 @@ void saveCalibration(const uint16_t* cal) {
   Preferences prefs;
   prefs.begin(kNvsNamespace, /*readOnly=*/false);
   prefs.putBytes(kNvsKeyCal, cal, kCalCount * sizeof(uint16_t));
-  prefs.putInt(kNvsKeyRot, config::kDisplayRotation);
+  prefs.putInt(kNvsKeyRot, displayRotation());
   prefs.end();
 }
 

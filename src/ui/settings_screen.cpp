@@ -207,6 +207,34 @@ void onGround(lv_event_t* e) {
   refreshSdLabel();
 }
 
+void onRestartTimer(lv_timer_t*) { ESP.restart(); }
+
+/**
+ * Flip screen: the orientation (and the touch mapping) is set at power-up, so
+ * save, say so, and restart. Touch is recalibrated on the way back up.
+ */
+void onFlip(lv_event_t* e) {
+  lv_obj_t* sw = static_cast<lv_obj_t*>(lv_event_get_target(e));
+  st::setFlipScreen(lv_obj_has_state(sw, LV_STATE_CHECKED));
+  Serial.printf("Flip screen %s: restarting\n", st::flipScreen() ? "on" : "off");
+
+  // Full-screen notice on the top layer; it also swallows further taps.
+  lv_obj_t* cover = lv_obj_create(lv_layer_top());
+  lv_obj_remove_style_all(cover);
+  lv_obj_set_size(cover, LV_PCT(100), LV_PCT(100));
+  lv_obj_set_style_bg_color(cover, lv_color_black(), 0);
+  lv_obj_set_style_bg_opa(cover, LV_OPA_COVER, 0);
+  lv_obj_add_flag(cover, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_t* text = lv_label_create(cover);
+  lv_label_set_text(text, "Restarting...\nThen tap each arrow tip\nto calibrate touch.");
+  lv_obj_set_style_text_align(text, LV_TEXT_ALIGN_CENTER, 0);
+  lv_obj_set_style_text_color(text, lv_color_white(), 0);
+  lv_obj_center(text);
+
+  lv_timer_t* t = lv_timer_create(onRestartTimer, 1500, nullptr);
+  lv_timer_set_repeat_count(t, 1);
+}
+
 void onBrightness(lv_event_t* e) {
   lv_obj_t* slider = static_cast<lv_obj_t*>(lv_event_get_target(e));
   const int32_t pct = lv_slider_get_value(slider);
@@ -312,6 +340,7 @@ void buildMenu() {
   const SwitchRow switches[] = {
       {"Runways", st::showRunways(), onRunways},
       {"Ground aircraft", st::showGroundAircraft(), onGround},
+      {"Flip screen 180", st::flipScreen(), onFlip},  // no degree sign in Montserrat
   };
   for (const SwitchRow& s : switches) {
     lv_obj_t* row = makeRow(body, s.title);

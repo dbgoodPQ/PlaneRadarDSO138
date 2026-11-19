@@ -194,8 +194,8 @@ void showRoute(const services::adsb::Aircraft& plane) {
     status = services::route::get(plane.callsign, &info);
   }
 
-  char from[16] = "";
-  char to[40] = "";
+  char from[48] = "";
+  char to[48] = "";
   const char* airline = "";
   switch (status) {
     case services::route::Status::Pending:
@@ -203,11 +203,11 @@ void showRoute(const services::adsb::Aircraft& plane) {
       break;
     case services::route::Status::Found:
       airline = info.airline;
-      if (info.origin[0] != '\0') {
-        snprintf(from, sizeof(from), "From %s", info.origin);
+      if (info.origin_place[0] != '\0') {
+        snprintf(from, sizeof(from), "From %s", info.origin_place);
       }
-      if (info.destination[0] != '\0') {
-        snprintf(to, sizeof(to), "To %s %s", info.destination, info.dest_city);
+      if (info.dest_place[0] != '\0') {
+        snprintf(to, sizeof(to), "To %s", info.dest_place);
       }
       break;
     case services::route::Status::NotFound:
@@ -279,7 +279,7 @@ void create(lv_obj_t* screen) {
   s_from = makeLabel(s_details, radar::fontSmall(), radar::kColorRunwayLabel, true);
   s_to = makeLabel(s_details, radar::fontSmall(), radar::kColorRunwayLabel, true);
   // Long names stop at two lines ("...") so the value rows always fit.
-  for (lv_obj_t* l : {s_desc, s_airline, s_to}) {
+  for (lv_obj_t* l : {s_desc, s_airline, s_from, s_to}) {
     limitLines(l, 2);
   }
 

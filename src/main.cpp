@@ -47,14 +47,17 @@ void setup() {
   Serial.println("Plane Radar (CYD)");
 
   hardware::boot_button::init();
-  displayInit();
-  hardware::touch::init();
-  ui::lvgl_port::init();
 
-  // Settings: NVS first, then the SD card file (if any) overrides it.
+  // Settings: NVS first, then the SD card file (if any) overrides it. Loaded
+  // before the display, which starts in the saved orientation (flip screen).
+  // The card has its own SPI bus, so it does not need the display.
   services::settings::init();
   services::location::init();
   services::config_store::init();
+
+  displayInit();
+  hardware::touch::init();  // recalibrates if the orientation changed
+  ui::lvgl_port::init();
   tft.setBrightness(static_cast<uint8_t>(
       services::settings::brightnessPct() * 255 / 100));
   services::adsb::init();
