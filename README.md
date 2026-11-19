@@ -19,7 +19,7 @@ Based on [MatixYo/ESP32-Plane-Radar](https://github.com/MatixYo/ESP32-Plane-Rada
 
 ## First boot
 
-1. **Touch calibration**: tap the four corner targets. To redo it later, hold a finger on the screen for 3 s while powering up.
+1. **Touch calibration**: tap the four corner targets. To redo it later, hold a finger on the screen for 3 s while powering up. It is also asked for again after flipping the screen.
 2. **Wi-Fi**: pick a network from the scan list and type the password. It is saved, and reconnects on its own after that.
 3. **Location**: a city-level guess from your IP address is used until you set one. Open **Settings → Location** and search an address (e.g. `14565 gilbert mirabel`).
 
@@ -59,7 +59,7 @@ The left two thirds of the screen is the radar; the right third is the detail pa
 
 ### Detail panel
 
-- **Selected plane**: callsign, airline and route (from adsbdb), aircraft name, then ALT, V/S, SPD, TRK, DST and BRG. "Signal lost" shows when the plane drops out of the feed; the selection clears after 10 s.
+- **Selected plane**: callsign, airline and route (from adsbdb, as `From Montréal, Canada` / `To Amsterdam, Netherlands`), aircraft name, then ALT, DST, SPD and V/S. Names are never cut; when they need the room, the values at the bottom are left out (V/S first, then SPD, then DST). "Signal lost" shows when the plane drops out of the feed; the selection clears after 10 s.
 - **Nothing selected**: a summary (in range, beyond the ring, the nearest plane and its distance, emergencies) and the altitude colour legend.
 
 ## Settings
@@ -72,6 +72,7 @@ The left two thirds of the screen is the radar; the right third is the detail pa
 | Runways | Show or hide the runway overlay |
 | Ground aircraft | Show or hide aircraft on the ground |
 | Brightness | Backlight, 10–100 % |
+| Flip screen 180 | Turns the picture upside down (USB connector on the left). The board restarts and asks for a new touch calibration. |
 
 Settings are saved in the ESP32's flash (NVS). With a microSD card they are also written to **`/planeradar.json`**, which wins at boot. So you can edit the file on a PC:
 
@@ -82,6 +83,7 @@ Settings are saved in the ESP32's flash (NVS). With a microSD card they are also
   "runways": true,
   "ground_aircraft": false,
   "brightness": 100,
+  "flip_screen": false,
   "range_km": 10,
   "location": {
     "lat": 45.635121,
@@ -94,6 +96,7 @@ Settings are saved in the ESP32's flash (NVS). With a microSD card they are also
 
 - `units`: `"km"` or `"mi"`
 - `range_km`: 5, 10, 15, 20, 25 or 30
+- `flip_screen`: `true` turns the screen 180°. It applies at power-up; touch is recalibrated after a change.
 - Missing or invalid fields keep the stored value. Wi-Fi credentials are never written to the card.
 
 ## Build and flash

@@ -11,10 +11,11 @@
 namespace services::route {
 
 struct Info {
-  char airline[40];      // "KLM Royal Dutch Airlines"
-  char origin[5];        // IATA "NRT" (ICAO if no IATA)
-  char destination[5];   // IATA "AMS"
-  char dest_city[24];    // "Amsterdam"
+  char airline[40];       // "KLM Royal Dutch Airlines"
+  char origin[5];         // IATA "NRT" (ICAO if no IATA); serial log only
+  char destination[5];    // IATA "AMS"
+  char origin_place[40];  // "Narita, Japan" (see placeName in the .cpp)
+  char dest_place[40];    // "Amsterdam, Netherlands"
 };
 
 enum class Status { None, Pending, Found, NotFound, Failed };

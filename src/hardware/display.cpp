@@ -3,10 +3,13 @@
 #include <Arduino.h>
 
 #include "config.h"
+#include "services/settings.h"
 
 LGFX tft;
 
 namespace {
+
+int s_rotation = config::kDisplayRotation;
 
 /** The CYD's RGB LED is active LOW and glows faintly when its pins float. */
 void ledOff() {
@@ -21,6 +24,12 @@ void ledOff() {
 void displayInit() {
   ledOff();
   tft.init();
-  tft.setRotation(config::kDisplayRotation);
+  s_rotation = services::settings::flipScreen() ? config::kDisplayRotationFlipped
+                                                : config::kDisplayRotation;
+  tft.setRotation(s_rotation);
   tft.setBrightness(config::kDisplayBrightness);
 }
+
+int displayRotation() { return s_rotation; }
+
+bool displayFlipped() { return s_rotation == config::kDisplayRotationFlipped; }

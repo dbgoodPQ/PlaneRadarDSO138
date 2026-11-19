@@ -36,9 +36,11 @@ constexpr int kDisplayPinBacklight = 21;  // PWM, active HIGH
 
 constexpr int kDisplayWidth = 320;
 constexpr int kDisplayHeight = 240;
-/** LovyanGFX rotation for landscape (USB connector on the right). Use 3 if the
- *  image is upside down; touch follows the rotation automatically. */
+/** LovyanGFX rotation for landscape, USB connector on the right. The
+ *  "Flip screen 180°" setting uses kDisplayRotationFlipped instead (USB on
+ *  the left); touch follows the rotation (recalibrated when it changes). */
 constexpr int kDisplayRotation = 1;
+constexpr int kDisplayRotationFlipped = 3;
 
 constexpr uint32_t kDisplaySpiWriteHz = 40000000;
 constexpr uint32_t kDisplaySpiReadHz = 16000000;

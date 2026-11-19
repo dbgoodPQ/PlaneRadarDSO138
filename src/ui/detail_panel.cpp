@@ -20,9 +20,11 @@ constexpr int kPadX = 5;
 constexpr int kPadY = 4;
 constexpr float kKmPerMile = 1.609344f;
 
-enum Row { kRowAlt, kRowVs, kRowSpd, kRowTrk, kRowDst, kRowBrg, kRowCount };
-constexpr const char* kRowNames[kRowCount] = {"ALT", "V/S", "SPD",
-                                              "TRK", "DST", "BRG"};
+// Top to bottom. When the names above need the room, rows are hidden from the
+// bottom up (V/S, then SPD, then DST); ALT always stays.
+enum Row { kRowAlt, kRowDst, kRowSpd, kRowVs, kRowCount };
+constexpr const char* kRowNames[kRowCount] = {"ALT", "DST", "SPD", "V/S"};
+constexpr int kRowGap = 1;  // s_details pad_row
 
 lv_obj_t* s_panel = nullptr;
 lv_obj_t* s_status = nullptr;    // "Tap a plane" / "Signal lost"
@@ -36,6 +38,7 @@ lv_obj_t* s_desc = nullptr;
 lv_obj_t* s_airline = nullptr;
 lv_obj_t* s_from = nullptr;
 lv_obj_t* s_to = nullptr;
+lv_obj_t* s_rows[kRowCount] = {};
 lv_obj_t* s_values[kRowCount] = {};
 
 lv_obj_t* makeLabel(lv_obj_t* parent, const lv_font_t* font, uint32_t rgb,
@@ -51,13 +54,6 @@ lv_obj_t* makeLabel(lv_obj_t* parent, const lv_font_t* font, uint32_t rgb,
   return label;
 }
 
-/** Cap a wrapping label at `lines` lines, ending in "..." when cut. */
-void limitLines(lv_obj_t* label, int lines) {
-  const lv_font_t* font = lv_obj_get_style_text_font(label, 0);
-  lv_obj_set_style_max_height(label, lv_font_get_line_height(font) * lines, 0);
-  lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-}
-
 lv_obj_t* makeColumn(lv_obj_t* parent) {
   lv_obj_t* col = lv_obj_create(parent);
   lv_obj_remove_style_all(col);
@@ -65,7 +61,7 @@ lv_obj_t* makeColumn(lv_obj_t* parent) {
   lv_obj_set_width(col, lv_pct(100));
   lv_obj_set_height(col, LV_SIZE_CONTENT);
   lv_obj_set_flex_flow(col, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_style_pad_row(col, 1, 0);
+  lv_obj_set_style_pad_row(col, kRowGap, 0);
   return col;
 }
 
@@ -181,9 +177,32 @@ void onSummaryDraw(lv_event_t* e) {
   }
 }
 
-int roundDeg(float deg) {
-  int d = static_cast<int>(lroundf(deg)) % 360;
-  return d < 0 ? d + 360 : d;
+/**
+ * Hide value rows from the bottom up (never ALT) until the details end inside
+ * the panel. Works from the height the details would have with every row
+ * shown, so rows are not toggled (and redrawn) when nothing changed.
+ */
+void fitRows() {
+  lv_obj_update_layout(s_panel);
+  lv_area_t panel;
+  lv_obj_get_content_coords(s_panel, &panel);
+  lv_area_t details;
+  lv_obj_get_coords(s_details, &details);
+
+  const int32_t row_step = lv_font_get_line_height(radar::fontSmall()) + kRowGap;
+  int32_t overflow = details.y2 - panel.y2;
+  for (int r = 1; r < kRowCount; ++r) {
+    if (lv_obj_has_flag(s_rows[r], LV_OBJ_FLAG_HIDDEN)) {
+      overflow += row_step;  // as if it were shown
+    }
+  }
+  for (int r = kRowCount - 1; r >= 1; --r) {
+    const bool hide = overflow > 0;
+    if (hide) {
+      overflow -= row_step;
+    }
+    setHidden(s_rows[r], hide);
+  }
 }
 
 void showRoute(const services::adsb::Aircraft& plane) {
@@ -194,8 +213,8 @@ void showRoute(const services::adsb::Aircraft& plane) {
     status = services::route::get(plane.callsign, &info);
   }
 
-  char from[16] = "";
-  char to[40] = "";
+  char from[48] = "";
+  char to[48] = "";
   const char* airline = "";
   switch (status) {
     case services::route::Status::Pending:
@@ -203,11 +222,11 @@ void showRoute(const services::adsb::Aircraft& plane) {
       break;
     case services::route::Status::Found:
       airline = info.airline;
-      if (info.origin[0] != '\0') {
-        snprintf(from, sizeof(from), "From %s", info.origin);
+      if (info.origin_place[0] != '\0') {
+        snprintf(from, sizeof(from), "From %s", info.origin_place);
       }
-      if (info.destination[0] != '\0') {
-        snprintf(to, sizeof(to), "To %s %s", info.destination, info.dest_city);
+      if (info.dest_place[0] != '\0') {
+        snprintf(to, sizeof(to), "To %s", info.dest_place);
       }
       break;
     case services::route::Status::NotFound:
@@ -278,11 +297,6 @@ void create(lv_obj_t* screen) {
   s_airline = makeLabel(s_details, radar::fontSmall(), radar::kColorPanelText, true);
   s_from = makeLabel(s_details, radar::fontSmall(), radar::kColorRunwayLabel, true);
   s_to = makeLabel(s_details, radar::fontSmall(), radar::kColorRunwayLabel, true);
-  // Long names stop at two lines ("...") so the value rows always fit.
-  for (lv_obj_t* l : {s_desc, s_airline, s_to}) {
-    limitLines(l, 2);
-  }
-
   lv_obj_t* sep = lv_obj_create(s_details);
   lv_obj_remove_style_all(sep);
   lv_obj_set_size(sep, lv_pct(100), 1);
@@ -301,6 +315,7 @@ void create(lv_obj_t* screen) {
     lv_obj_t* name = makeLabel(row, radar::fontSmall(), radar::kColorPanelDim, false);
     lv_label_set_text_static(name, kRowNames[r]);
     s_values[r] = makeLabel(row, radar::fontSmall(), radar::kColorPanelText, false);
+    s_rows[r] = row;
   }
 
   s_sum = Summary{};
@@ -322,6 +337,9 @@ void forget() {
   for (lv_obj_t*& v : s_values) {
     v = nullptr;
   }
+  for (lv_obj_t*& r : s_rows) {
+    r = nullptr;
+  }
 }
 
 void showIdle(const Summary& summary) {
@@ -338,8 +356,7 @@ void showIdle(const Summary& summary) {
   setHidden(s_details, true);
 }
 
-void show(const services::adsb::Aircraft& plane, float dist_km,
-          float bearing_deg, bool lost) {
+void show(const services::adsb::Aircraft& plane, float dist_km, bool lost) {
   if (s_panel == nullptr) {
     return;
   }
@@ -366,8 +383,7 @@ void show(const services::adsb::Aircraft& plane, float dist_km,
 
   setText(s_callsign, plane.callsign[0] != '\0' ? plane.callsign : plane.hex);
   setOptional(s_type, plane.type);
-  // The banner takes a line: drop the aircraft name so the rows still fit.
-  setOptional(s_desc, emergency ? "" : plane.desc);
+  setOptional(s_desc, plane.desc);
   showRoute(plane);
 
   char buf[24];
@@ -389,17 +405,13 @@ void show(const services::adsb::Aircraft& plane, float dist_km,
   }
   setText(s_values[kRowSpd], buf);
 
-  snprintf(buf, sizeof(buf), "%03d\xC2\xB0", roundDeg(plane.track_deg));
-  setText(s_values[kRowTrk], buf);
-
   const bool miles = radar::useMiles();
   const float dist = miles ? dist_km / kKmPerMile : dist_km;
   snprintf(buf, sizeof(buf), dist < 100.0f ? "%.1f %s" : "%.0f %s", dist,
            miles ? "mi" : "km");
   setText(s_values[kRowDst], buf);
 
-  snprintf(buf, sizeof(buf), "%03d\xC2\xB0", roundDeg(bearing_deg));
-  setText(s_values[kRowBrg], buf);
+  fitRows();
 }
 
 }  // namespace ui::detail_panel

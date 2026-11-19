@@ -17,6 +17,7 @@ constexpr char kKeyMiles[] = "useMiles";
 constexpr char kKeyRunways[] = "showRwys";
 constexpr char kKeyGround[] = "showGnd";
 constexpr char kKeyBrightness[] = "bright";
+constexpr char kKeyFlip[] = "flip";
 
 constexpr uint8_t kDefaultRangeIndex = 1;  // 10 km ring
 constexpr uint8_t kDefaultBrightnessPct = 100;
@@ -26,6 +27,7 @@ bool s_show_runways = true;
 bool s_show_ground = false;
 uint8_t s_brightness_pct = kDefaultBrightnessPct;
 uint8_t s_range_index = kDefaultRangeIndex;
+bool s_flip_screen = false;
 
 template <typename Fn>
 void writePrefs(Fn fn) {
@@ -68,6 +70,7 @@ void init() {
   s_show_ground = prefs.getBool(kKeyGround, false);
   s_brightness_pct =
       clampBrightness(prefs.getUChar(kKeyBrightness, kDefaultBrightnessPct));
+  s_flip_screen = prefs.getBool(kKeyFlip, false);
   prefs.end();
 }
 
@@ -76,6 +79,7 @@ bool showRunways() { return s_show_runways; }
 bool showGroundAircraft() { return s_show_ground; }
 uint8_t brightnessPct() { return s_brightness_pct; }
 uint8_t rangeIndex() { return s_range_index; }
+bool flipScreen() { return s_flip_screen; }
 
 void setUseMiles(bool v, bool from_sd) {
   s_use_miles = v;
@@ -108,6 +112,12 @@ void setRangeIndex(uint8_t index, bool from_sd) {
   }
   s_range_index = index;
   writePrefs([index](Preferences& p) { p.putUChar(kKeyRange, index); });
+  changed(from_sd);
+}
+
+void setFlipScreen(bool v, bool from_sd) {
+  s_flip_screen = v;
+  writePrefs([v](Preferences& p) { p.putBool(kKeyFlip, v); });
   changed(from_sd);
 }
 

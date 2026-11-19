@@ -78,6 +78,7 @@ void build(JsonDocument& doc) {
   doc["runways"] = st::showRunways();
   doc["ground_aircraft"] = st::showGroundAircraft();
   doc["brightness"] = st::brightnessPct();
+  doc["flip_screen"] = st::flipScreen();
   doc["range_km"] = static_cast<int>(
       lroundf(ui::radar::kRangePresets[st::rangeIndex()].ring3_km));
   if (services::location::isSet()) {
@@ -110,6 +111,9 @@ void apply(const JsonDocument& doc) {
     st::setBrightnessPct(
         static_cast<uint8_t>(constrain(doc["brightness"].as<int>(), 0, 100)),
         kFromSd);
+  }
+  if (doc["flip_screen"].is<bool>()) {
+    st::setFlipScreen(doc["flip_screen"].as<bool>(), kFromSd);
   }
   if (doc["range_km"].is<float>()) {
     const int idx = presetForKm(doc["range_km"].as<float>());

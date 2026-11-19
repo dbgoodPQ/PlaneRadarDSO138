@@ -16,7 +16,8 @@ enum class SdState { NoCard, Ok, ReadError, WriteError };
 /**
  * Mount the card and load the config file, applying its values. Creates the
  * file from the current settings when the card has none. Call at boot after
- * settings::init() and location::init().
+ * settings::init() and location::init(), before displayInit() (the screen
+ * orientation can come from the card).
  */
 void init();
 
