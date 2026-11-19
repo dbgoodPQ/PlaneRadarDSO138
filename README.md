@@ -59,7 +59,7 @@ The left two thirds of the screen is the radar; the right third is the detail pa
 
 ### Detail panel
 
-- **Selected plane**: callsign, airline and route (from adsbdb, as `From Montréal, Canada` / `To Amsterdam, Netherlands`), aircraft name, then ALT, V/S, SPD, TRK, DST and BRG. "Signal lost" shows when the plane drops out of the feed; the selection clears after 10 s.
+- **Selected plane**: callsign, airline and route (from adsbdb, as `From Montréal, Canada` / `To Amsterdam, Netherlands`), aircraft name, then ALT, DST, SPD and V/S. Names are never cut; when they need the room, the values at the bottom are left out (V/S first, then SPD, then DST). "Signal lost" shows when the plane drops out of the feed; the selection clears after 10 s.
 - **Nothing selected**: a summary (in range, beyond the ring, the nearest plane and its distance, emergencies) and the altitude colour legend.
 
 ## Settings

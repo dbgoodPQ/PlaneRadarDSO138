@@ -31,10 +31,10 @@ struct Summary {
 void showIdle(const Summary& summary);
 
 /**
- * Show `plane`. `dist_km` / `bearing_deg` are from the radar center; `lost`
- * marks a plane that dropped out of the feed (last known data is kept).
+ * Show `plane`. `dist_km` is from the radar center; `lost` marks a plane
+ * that dropped out of the feed (last known data is kept). Names are shown in
+ * full; value rows that no longer fit are hidden (V/S, then SPD, then DST).
  */
-void show(const services::adsb::Aircraft& plane, float dist_km,
-          float bearing_deg, bool lost);
+void show(const services::adsb::Aircraft& plane, float dist_km, bool lost);
 
 }  // namespace ui::detail_panel

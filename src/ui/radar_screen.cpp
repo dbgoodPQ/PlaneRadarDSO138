@@ -124,7 +124,6 @@ bool s_full_redraw = true;  // next refresh redraws the whole radar
 char s_selected_hex[sizeof(services::adsb::Aircraft::hex)] = "";
 services::adsb::Aircraft s_selected_last = {};
 float s_selected_dist_km = 0.0f;
-float s_selected_bearing_deg = 0.0f;
 bool s_selected_seen = false;          // present in the latest snapshot
 unsigned long s_selected_lost_ms = 0;  // when it dropped out (0 = present)
 int s_selected_item = -1;              // into s_items, -1 if not drawn
@@ -595,7 +594,6 @@ void computeAircraft() {
       selected_index = static_cast<int>(i);
       s_selected_last = s_planes[i];
       s_selected_dist_km = dist_km;
-      s_selected_bearing_deg = atan2f(dx_km, dy_km) / kDegToRad;
     }
 
     if (dist_km <= inner_max_km) {
@@ -696,8 +694,7 @@ void updatePanel() {
       return;
     }
   }
-  detail_panel::show(s_selected_last, s_selected_dist_km,
-                     s_selected_bearing_deg, !s_selected_seen);
+  detail_panel::show(s_selected_last, s_selected_dist_km, !s_selected_seen);
 }
 
 /** Redraw a radar-area rectangle. */
