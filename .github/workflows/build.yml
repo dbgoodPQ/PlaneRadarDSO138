@@ -1,9 +1,10 @@
-# Build firmware on push/PR; upload binaries as a short-lived artifact.
+# Build CYD firmware on push/PR or manually (Actions tab > Build > Run workflow).
+# Artifact: one merged .bin to flash at 0x0, plus the split .bin files.
 name: Build
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, cyd-esp32-2432s028r]
   pull_request:
   workflow_dispatch:
 
@@ -37,19 +38,39 @@ jobs:
       - name: Install PlatformIO
         run: pip install --upgrade platformio
 
-      - name: Build
-        run: pio run -e supermini
+      - name: Unit tests (native)
+        run: pio test -e native
 
-      - name: Merge web-flash image
-        run: pio run -t merge -e supermini
+      - name: Build and merge
+        run: |
+          pio run -e cyd
+          pio run -t merge -e cyd
 
-      - name: Upload firmware artifacts
+      - name: Package firmware
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          BUILD=.pio/build/cyd
+          mkdir -p dist/split
+          cp "$BUILD/firmware-merged.bin" "dist/plane-radar-cyd-${SHORT_SHA}.bin"
+          cp "$BUILD/bootloader.bin" "$BUILD/partitions.bin" "$BUILD/firmware.bin" dist/split/
+          cat > dist/FLASHING.txt <<EOF
+          Plane Radar - CYD (ESP32-2432S028R), commit ${SHORT_SHA}
+
+          Easiest: flash plane-radar-cyd-${SHORT_SHA}.bin at address 0x0
+            esptool.py --chip esp32 write_flash 0x0 plane-radar-cyd-${SHORT_SHA}.bin
+            or a browser flasher: https://espressif.github.io/esptool-js/
+
+          Split files (same result):
+            0x1000   split/bootloader.bin
+            0x8000   split/partitions.bin
+            0xe000   boot_app0.bin (from the Arduino-ESP32 core)
+            0x10000  split/firmware.bin
+          EOF
+          echo "SHORT_SHA=${SHORT_SHA}" >> "$GITHUB_ENV"
+
+      - name: Upload firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: plane-radar-supermini
+          name: plane-radar-cyd-${{ env.SHORT_SHA }}
           if-no-files-found: error
-          path: |
-            .pio/build/supermini/firmware-merged.bin
-            .pio/build/supermini/firmware.bin
-            .pio/build/supermini/bootloader.bin
-            .pio/build/supermini/partitions.bin
+          path: dist/

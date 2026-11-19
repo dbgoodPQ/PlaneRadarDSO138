@@ -6,104 +6,76 @@
 
 namespace config {
 
-// --- Wi-Fi portal ---
-constexpr char kPortalApName[] = "PlaneRadar-Setup";
-constexpr char kPortalIp[] = "192.168.4.1";
-/** mDNS host (no ".local" suffix); browser: http://plane-radar.local */
-constexpr char kPortalHostname[] = "plane-radar";
-constexpr char kPortalHostUrl[] = "plane-radar.local";
-
-/** Per-attempt STA connect wait (ms); retried kWifiConnectAttempts times. */
-constexpr unsigned long kWifiConnectAttemptMs = 15000;
-constexpr uint8_t kWifiConnectAttempts = 3;
-constexpr unsigned long kWifiPortalTimeoutSec = 0;  // 0 = no timeout while configuring
-constexpr unsigned long kWifiConnectingFrameMs = 50;
-/** Wait after disconnect before reconnecting (avoids portal on brief drops). */
-constexpr unsigned long kWifiDownGraceMs = 4000;
-/** Minimum interval between background reconnect tries. */
+// --- Wi-Fi ---
+/** Give up on a connection attempt after this long. */
+constexpr unsigned long kWifiConnectTimeoutMs = 15000;
+/** After losing a saved network, retry it at this interval (background). */
 constexpr unsigned long kWifiReconnectIntervalMs = 15000;
+/** Most networks listed on the Wi-Fi screen (strongest first). */
+constexpr int kWifiMaxListedNetworks = 15;
+
+// --- Touch ---
+/** Touch dropouts shorter than this don't count as a release (resistive panel). */
+constexpr unsigned long kTouchDropoutMs = 150UL;
 
 // --- BOOT button (active LOW) ---
-#if defined(PLANE_RADAR_DSO138)
-// ESP32-WROOM-32 dev board: BOOT button is GPIO 0.
+// CYD: GPIO 0. Tap = next range, hold = open Settings.
 constexpr gpio_num_t kBootPin = GPIO_NUM_0;
-#else
-// ESP32-C3 Super Mini: BOOT button is GPIO 9.
-constexpr gpio_num_t kBootPin = GPIO_NUM_9;
-#endif
-constexpr unsigned long kBootResetHoldMs = 3000UL;
+constexpr unsigned long kBootHoldMs = 3000UL;
 /** Ignore BOOT taps shorter than this (debounce). */
 constexpr unsigned long kBootTapMinMs = 40UL;
 
-#if defined(PLANE_RADAR_DSO138)
-// --- Display: JYE Tech DSO138 LCD module, ILI9341 320x240, 8-bit parallel ---
-// Wiring matches the DSO138 demo project (module header pin in comment).
-constexpr int kDisplayPinCs = 27;   // P7  nCS
-constexpr int kDisplayPinDc = 14;   // P8  RS
-constexpr int kDisplayPinWr = 25;   // P9  nWR
-constexpr int kDisplayPinRd = 13;   // P10 nRD
-constexpr int kDisplayPinRst = 26;  // P31 nRESET
-constexpr int kDisplayPinD0 = 16;   // P23 DB0
-constexpr int kDisplayPinD1 = 4;    // P24 DB1
-constexpr int kDisplayPinD2 = 23;   // P25 DB2
-constexpr int kDisplayPinD3 = 22;   // P26 DB3
-constexpr int kDisplayPinD4 = 21;   // P27 DB4
-constexpr int kDisplayPinD5 = 19;   // P28 DB5
-constexpr int kDisplayPinD6 = 18;   // P29 DB6
-constexpr int kDisplayPinD7 = 17;   // P30 DB7
+// --- Display: ESP32-2432S028R (CYD), ILI9341 320x240 on HSPI ---
+constexpr int kDisplayPinSclk = 14;
+constexpr int kDisplayPinMosi = 13;
+constexpr int kDisplayPinMiso = 12;
+constexpr int kDisplayPinCs = 15;
+constexpr int kDisplayPinDc = 2;
+constexpr int kDisplayPinRst = -1;        // tied to EN on the CYD
+constexpr int kDisplayPinBacklight = 21;  // PWM, active HIGH
 
 constexpr int kDisplayWidth = 320;
 constexpr int kDisplayHeight = 240;
-/** LovyanGFX rotation for landscape 320x240. Try 3 if the image is upside down. */
+/** LovyanGFX rotation for landscape (USB connector on the right). Use 3 if the
+ *  image is upside down; touch follows the rotation automatically. */
 constexpr int kDisplayRotation = 1;
 
-constexpr uint32_t kDisplayBusWriteHz = 20000000;
-// If colors look swapped or inverted on your module, flip these.
+constexpr uint32_t kDisplaySpiWriteHz = 40000000;
+constexpr uint32_t kDisplaySpiReadHz = 16000000;
 constexpr bool kDisplayInvert = false;
 constexpr bool kDisplayRgbOrder = false;
-#else
-// --- Display: GC9A01 1.28" round 240×240 (SPI) ---
-constexpr gpio_num_t kDisplayPinRst = GPIO_NUM_0;
-constexpr gpio_num_t kDisplayPinCs = GPIO_NUM_1;
-constexpr gpio_num_t kDisplayPinDc = GPIO_NUM_10;
-constexpr gpio_num_t kDisplayPinMosi = GPIO_NUM_3;  // display SDA
-constexpr gpio_num_t kDisplayPinSclk = GPIO_NUM_4;  // display SCL
+/** Backlight at boot, before the saved brightness setting is applied. */
+constexpr uint8_t kDisplayBrightness = 255;
 
-constexpr int kDisplayWidth = 240;
-constexpr int kDisplayHeight = 240;
-constexpr int kDisplayRotation = 0;
+// --- Touch: XPT2046 over software SPI (bit-banged) ---
+constexpr int kTouchPinSclk = 25;
+constexpr int kTouchPinMosi = 32;
+constexpr int kTouchPinMiso = 39;
+constexpr int kTouchPinCs = 33;
+constexpr int kTouchPinIrq = 36;
+/** Hold a finger on the screen this long during power-up to redo calibration. */
+constexpr unsigned long kTouchRecalibrateHoldMs = 3000UL;
 
-constexpr uint32_t kDisplaySpiWriteHz = 40000000;
-// GC9A01 modules often need invert + BGR for correct black/green output
-constexpr bool kDisplayInvert = true;
-constexpr bool kDisplayRgbOrder = true;
-#endif
+// --- microSD slot: VSPI (touch is bit-banged, so VSPI is free) ---
+constexpr int kSdPinSclk = 18;
+constexpr int kSdPinMiso = 19;
+constexpr int kSdPinMosi = 23;
+constexpr int kSdPinCs = 5;
+constexpr uint32_t kSdSpiHz = 20000000;
 
-/** The radar is drawn into a square 240x240 frame; this is where it lands on the
- *  panel. On the 240x240 round display it fills the screen; on 320x240 it is
- *  centered, leaving a 40 px band on each side. */
-constexpr int kRadarFrameSize = 240;
-constexpr int kRadarOriginX = (kDisplayWidth - kRadarFrameSize) / 2;
-constexpr int kRadarOriginY = (kDisplayHeight - kRadarFrameSize) / 2;
+// --- On-board RGB LED (active LOW) — kept off ---
+constexpr int kLedPinRed = 4;
+constexpr int kLedPinGreen = 16;
+constexpr int kLedPinBlue = 17;
 
-// --- Radar center defaults (overridden via WiFi setup portal) ---
+// --- Radar center defaults (until a location is saved) ---
 constexpr double kDefaultRadarLat = 52.3676;
 constexpr double kDefaultRadarLon = 4.9041;
 
 /** Poll adsb.fi (API public limit: 1 req/s). */
 constexpr unsigned long kAdsbFetchIntervalMs = 5000;
-/** Redraw cadence. Slow updates avoid continuous visual motion/flicker; aircraft
- *  positions jump between updates instead of being smoothly dead-reckoned. */
-constexpr unsigned long kRadarRedrawIntervalMs = 2000;
-/** Legacy scale unused — fetch uses radar::fetchRadiusKm() to screen edge. */
-constexpr float kAdsbFetchRadiusScale = 1.0f;
-/** false = hide aircraft with alt_baro "ground"; true = show them too. */
-constexpr bool kAdsbShowGroundAircraft = false;
-
-// --- UI colors (RGB565) — status screens ---
-constexpr uint16_t kColorBlack = 0x0000;
-constexpr uint16_t kColorYellow = 0xFFE0;
-constexpr uint16_t kTextOnYellow = kColorBlack;
-constexpr uint16_t kTextOnBlack = 0xFFFF;
+/** Radar refresh: positions are dead-reckoned between fetches, and only the
+ *  areas that changed are redrawn. */
+constexpr unsigned long kRadarRedrawIntervalMs = 1000;
 
 }  // namespace config

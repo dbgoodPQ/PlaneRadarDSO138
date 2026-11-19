@@ -11,7 +11,11 @@
 #include <cstring>
 
 #include "config.h"
+#include "services/adsb_parse.h"
 #include "services/http_body_framing.h"
+#include "services/network_task.h"
+#include "services/radar_location.h"
+#include "services/settings.h"
 
 namespace services::adsb {
 
@@ -22,25 +26,57 @@ constexpr float kKmPerNm = 1.852f;
 constexpr int kConnectTimeoutMs = 5000;  // TLS handshake needs room
 constexpr unsigned long kRequestTimeoutMs = 6000;
 
-Aircraft s_aircraft[kMaxAircraft];
-size_t s_aircraft_count = 0;
+// Double buffer (~7 KB each). s_front is the UI's; the other one is the fetch
+// task's. They swap in takeLatest(), only while s_ready is set (no parse is
+// writing the back buffer then).
+Aircraft s_buffers[2][kMaxAircraft];
+uint8_t s_front = 0;
+size_t s_front_count = 0;
+unsigned long s_front_update_ms = 0;
+size_t s_back_count = 0;
+unsigned long s_back_update_ms = 0;
+bool s_ready = false;        // back buffer holds a finished, untaken list
+bool s_clear_pending = false;  // clear(): the UI's next take returns nothing
 unsigned long s_last_update_ms = 0;
 PollFn s_poll_fn = nullptr;
 SemaphoreHandle_t s_mutex = nullptr;
 
-/** Publish parsed aircraft to the shared buffer atomically. */
-void publish(const Aircraft* src, size_t count) {
+// Kept-open HTTPS connection (network task only). The TLS handshake briefly
+// needs ~85 KB of heap, so it should happen once, not every fetch.
+WiFiClientSecure s_client;
+HTTPClient s_http;
+bool s_client_ready = false;
+
+void lock() {
   if (s_mutex != nullptr) {
     xSemaphoreTake(s_mutex, portMAX_DELAY);
   }
-  for (size_t i = 0; i < count; ++i) {
-    s_aircraft[i] = src[i];
-  }
-  s_aircraft_count = count;
-  s_last_update_ms = millis();  // base time for dead-reckoning
+}
+
+void unlock() {
   if (s_mutex != nullptr) {
     xSemaphoreGive(s_mutex);
   }
+}
+
+/** Fetch task: claim the back buffer (drops a list the UI never took). */
+Aircraft* beginParse() {
+  lock();
+  s_ready = false;
+  Aircraft* back = s_buffers[s_front ^ 1];
+  unlock();
+  return back;
+}
+
+/** Fetch task: the back buffer is complete; offer it to the UI. */
+void publish(size_t count) {
+  lock();
+  s_back_count = count;
+  s_back_update_ms = millis();  // base time for dead-reckoning
+  s_last_update_ms = s_back_update_ms;
+  s_ready = true;
+  s_clear_pending = false;
+  unlock();
 }
 
 void pollNetwork() {
@@ -49,22 +85,25 @@ void pollNetwork() {
   }
 }
 
-int performGetWithPoll(HTTPClient& http) {
-  http.setConnectTimeout(kConnectTimeoutMs);
-  const unsigned long deadline = millis() + kRequestTimeoutMs;
-  while (millis() < deadline) {
+/**
+ * One GET. A kept-open connection the server has quietly closed fails at
+ * once; that case is retried a single time on a fresh connection. A failed
+ * fresh connect is not retried: it is usually a failed TLS setup (heap too
+ * fragmented), and hammering it only churns the heap more. The next fetch
+ * cycle tries again.
+ */
+int performGetWithPoll(HTTPClient& http, const String& url) {
+  const bool reused = s_client.connected();
+  pollNetwork();
+  int code = http.GET();
+  if (code < 0 && reused) {
+    Serial.printf("adsb: kept-open connection lost (%d), reconnecting\n", code);
+    s_client.stop();
+    http.begin(s_client, url);
     pollNetwork();
-    const int code = http.GET();
-    if (code > 0) {
-      return code;
-    }
-    if (code != HTTPC_ERROR_CONNECTION_REFUSED &&
-        code != HTTPC_ERROR_NOT_CONNECTED) {
-      return code;
-    }
-    delay(5);
+    code = http.GET();
   }
-  return HTTPC_ERROR_READ_TIMEOUT;
+  return code;
 }
 
 /**
@@ -131,116 +170,6 @@ using BodyReader = services::http::BodyFramer<PollingSocketSource>;
 
 float kmToNauticalMiles(float km) { return km / kKmPerNm; }
 
-bool readJsonFloat(const JsonObject& obj, const char* key, float* out) {
-  if (obj[key].is<float>() || obj[key].is<double>() || obj[key].is<int>()) {
-    *out = obj[key].as<float>();
-    return true;
-  }
-  return false;
-}
-
-float pickNoseHeading(const JsonObject& plane) {
-  float v = 0.0f;
-  if (readJsonFloat(plane, "true_heading", &v)) {
-    return v;
-  }
-  if (readJsonFloat(plane, "mag_heading", &v)) {
-    return v;
-  }
-  if (readJsonFloat(plane, "track", &v)) {
-    return v;
-  }
-  if (readJsonFloat(plane, "dir", &v)) {
-    return v;
-  }
-  return 0.0f;
-}
-
-float pickTrackHeading(const JsonObject& plane) {
-  float v = 0.0f;
-  if (readJsonFloat(plane, "track", &v)) {
-    return v;
-  }
-  if (readJsonFloat(plane, "true_heading", &v)) {
-    return v;
-  }
-  if (readJsonFloat(plane, "mag_heading", &v)) {
-    return v;
-  }
-  if (readJsonFloat(plane, "dir", &v)) {
-    return v;
-  }
-  return 0.0f;
-}
-
-float pickGroundSpeed(const JsonObject& plane) {
-  float v = 0.0f;
-  if (readJsonFloat(plane, "gs", &v)) {
-    return v;
-  }
-  if (readJsonFloat(plane, "tas", &v)) {
-    return v;
-  }
-  if (readJsonFloat(plane, "ias", &v)) {
-    return v;
-  }
-  return 0.0f;
-}
-
-bool isOnGround(const JsonObject& plane) {
-  if (!plane["alt_baro"].is<const char*>()) {
-    return false;
-  }
-  return strcmp(plane["alt_baro"].as<const char*>(), "ground") == 0;
-}
-
-void copyJsonStringTrimmed(const JsonObject& obj, const char* key, char* out,
-                           size_t out_len) {
-  out[0] = '\0';
-  if (out_len == 0 || !obj[key].is<const char*>()) {
-    return;
-  }
-  const char* s = obj[key].as<const char*>();
-  size_t n = strnlen(s, out_len - 1);
-  while (n > 0 && s[n - 1] == ' ') {
-    --n;
-  }
-  memcpy(out, s, n);
-  out[n] = '\0';
-}
-
-void formatAltitudeTag(const JsonObject& plane, char* out, size_t out_len) {
-  out[0] = '\0';
-  if (out_len == 0) {
-    return;
-  }
-
-  if (plane["alt_baro"].is<const char*>()) {
-    const char* s = plane["alt_baro"].as<const char*>();
-    if (strcmp(s, "ground") == 0) {
-      strncpy(out, "GND", out_len - 1);
-      out[out_len - 1] = '\0';
-      return;
-    }
-  }
-
-  float alt = 0.0f;
-  if (readJsonFloat(plane, "alt_baro", &alt) ||
-      readJsonFloat(plane, "alt_geom", &alt)) {
-    snprintf(out, out_len, "%d ft", static_cast<int>(lroundf(alt)));
-  }
-}
-
-void fillTagFields(Aircraft* ac, const JsonObject& plane) {
-  copyJsonStringTrimmed(plane, "flight", ac->callsign, sizeof(ac->callsign));
-  if (ac->callsign[0] == '\0') {
-    copyJsonStringTrimmed(plane, "hex", ac->callsign, sizeof(ac->callsign));
-  }
-
-  copyJsonStringTrimmed(plane, "t", ac->type, sizeof(ac->type));
-  formatAltitudeTag(plane, ac->alt, sizeof(ac->alt));
-}
-
 }  // namespace
 
 void init() {
@@ -251,32 +180,49 @@ void init() {
 
 void setPollFn(PollFn fn) { s_poll_fn = fn; }
 
-size_t aircraftCount() { return s_aircraft_count; }
-
-const Aircraft* aircraftList() { return s_aircraft; }
+void clear() {
+  lock();
+  s_ready = false;
+  s_clear_pending = true;
+  s_last_update_ms = 0;
+  unlock();
+}
 
 unsigned long lastUpdateMs() { return s_last_update_ms; }
 
-size_t snapshotAircraft(Aircraft* out, size_t max_out,
-                        unsigned long* out_last_update_ms) {
-  if (s_mutex != nullptr) {
-    xSemaphoreTake(s_mutex, portMAX_DELAY);
+const Aircraft* takeLatest(size_t* count, unsigned long* out_last_update_ms) {
+  lock();
+  if (s_ready) {
+    s_front ^= 1;
+    s_front_count = s_back_count;
+    s_front_update_ms = s_back_update_ms;
+    s_ready = false;
+  } else if (s_clear_pending) {
+    s_front_count = 0;
+    s_front_update_ms = 0;
+    s_clear_pending = false;
   }
-  const size_t count =
-      s_aircraft_count < max_out ? s_aircraft_count : max_out;
-  for (size_t i = 0; i < count; ++i) {
-    out[i] = s_aircraft[i];
-  }
+  *count = s_front_count;
   if (out_last_update_ms != nullptr) {
-    *out_last_update_ms = s_last_update_ms;
+    *out_last_update_ms = s_front_update_ms;
   }
-  if (s_mutex != nullptr) {
-    xSemaphoreGive(s_mutex);
-  }
-  return count;
+  const Aircraft* front = s_buffers[s_front];
+  unlock();
+  return front;
 }
 
-bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
+void closeConnection() {
+  if (s_client_ready && s_client.connected()) {
+    s_http.end();
+    s_client.stop();
+    Serial.println("adsb: connection closed for another request");
+  }
+}
+
+bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km,
+                 uint32_t location_generation) {
+  const uint32_t t_start = millis();
+  services::network_task::traceHeap("adsb:before");
   const float dist_nm = kmToNauticalMiles(fetch_radius_km);
 
   String url = kApiBase;
@@ -292,15 +238,19 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   for (const char* key :
        {"lat", "lon", "true_heading", "mag_heading", "track", "dir", "gs",
         "tas", "ias", "alt_baro", "alt_geom", "seen_pos", "flight", "hex", "t",
-        "category"}) {
+        "category", "desc", "squawk", "emergency", "baro_rate", "geom_rate"}) {
     f[key] = true;
   }
 
-  WiFiClientSecure client;
-  client.setInsecure();
-
-  HTTPClient http;
-  if (!http.begin(client, url)) {
+  if (!s_client_ready) {
+    s_client.setInsecure();
+    s_http.setReuse(true);
+    s_http.setConnectTimeout(kConnectTimeoutMs);
+    s_client_ready = true;
+  }
+  HTTPClient& http = s_http;
+  const bool was_connected = s_client.connected();
+  if (!http.begin(s_client, url)) {
     Serial.println("adsb: http.begin failed");
     return false;
   }
@@ -311,10 +261,12 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   http.collectHeaders(kWantedHeaders, 1);
 
   http.setTimeout(kRequestTimeoutMs);
-  const int code = performGetWithPoll(http);
+  const int code = performGetWithPoll(http, url);
+  services::network_task::traceHeap("adsb:connect+tls+headers");
   if (code != HTTP_CODE_OK) {
     Serial.printf("adsb: HTTP %d\n", code);
     http.end();
+    s_client.stop();  // start clean next time
     return false;
   }
 
@@ -322,6 +274,7 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   if (stream == nullptr) {
     Serial.println("adsb: no response stream");
     http.end();
+    s_client.stop();
     return false;
   }
 
@@ -338,11 +291,16 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
   JsonDocument doc;
   const DeserializationError err =
       deserializeJson(doc, body, DeserializationOption::Filter(filter));
+  services::network_task::traceHeap("adsb:body+json");
   // Read off the terminating chunk the parser stopped short of, so the socket
-  // sits at the end of the message. Not needed while every fetch builds its own
-  // connection, but a prerequisite for ever reusing one.
+  // sits at the end of the message, ready for the next request.
   body.drain();
-  http.end();
+  const size_t body_bytes = body.bytesRead();
+  http.end();  // keeps the connection open when the server allows it
+  if (err || body.framingError()) {
+    s_client.stop();  // unknown position in the stream: don't reuse it
+  }
+  services::network_task::traceHeap("adsb:close");
   if (err) {
     if (body.framingError()) {
       Serial.println("adsb: malformed chunked body");
@@ -354,9 +312,9 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
     return false;
   }
 
-  // Parse into a local buffer, then publish atomically so a reader on another
-  // thread never sees a half-updated list.
-  Aircraft parsed[kMaxAircraft];
+  // Parse into the back buffer; the UI keeps reading the front one until
+  // publish() offers this list and the UI swaps.
+  Aircraft* parsed = beginParse();
   size_t n = 0;
   JsonArray ac = doc["ac"].as<JsonArray>();
   if (!ac.isNull()) {
@@ -364,34 +322,34 @@ bool fetchUpdate(double center_lat, double center_lon, float fetch_radius_km) {
       if (n >= kMaxAircraft) {
         break;
       }
-      if (!plane["lat"].is<float>() || !plane["lon"].is<float>()) {
+      if (parse::isOnGround(plane) && !services::settings::showGroundAircraft()) {
         continue;
       }
-      if (isOnGround(plane) && !config::kAdsbShowGroundAircraft) {
-        continue;
+      if (!parse::aircraft(plane, &parsed[n])) {
+        continue;  // no position
       }
 
-      parsed[n].lat = plane["lat"].as<float>();
-      parsed[n].lon = plane["lon"].as<float>();
-      parsed[n].nose_deg = pickNoseHeading(plane);
-      parsed[n].track_deg = pickTrackHeading(plane);
-      parsed[n].gs_knots = pickGroundSpeed(plane);
-
-      // seen_pos: seconds since this position was measured. Use it as the
-      // dead-reckoning age offset, capped so a very stale fix isn't flung far.
-      float seen_pos = 0.0f;
-      readJsonFloat(plane, "seen_pos", &seen_pos);
-      if (seen_pos < 0.0f) seen_pos = 0.0f;
-      if (seen_pos > 30.0f) seen_pos = 30.0f;
-      parsed[n].pos_age_ms = static_cast<uint32_t>(seen_pos * 1000.0f);
-
-      fillTagFields(&parsed[n], plane);
+#ifdef PLANE_RADAR_FAKE_SQUAWK
+      // Test build only: show the first aircraft as squawking 7700.
+      if (n == 0) {
+        snprintf(parsed[n].squawk, sizeof(parsed[n].squawk), "7700");
+        parsed[n].emergency = Emergency::General;
+      }
+#endif
       ++n;
     }
   }
 
-  publish(parsed, n);
-  Serial.printf("adsb: %u aircraft\n", static_cast<unsigned>(n));
+  if (services::location::generation() != location_generation) {
+    Serial.println("adsb: location changed during fetch, result dropped");
+    return false;
+  }
+  publish(n);
+  services::network_task::traceHeap("adsb:fill");
+  Serial.printf("adsb: %u aircraft, %u bytes, %u ms%s\n", static_cast<unsigned>(n),
+                static_cast<unsigned>(body_bytes),
+                static_cast<unsigned>(millis() - t_start),
+                was_connected ? "" : " (new connection)");
   return true;
 }
 

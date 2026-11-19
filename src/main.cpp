@@ -1,129 +1,111 @@
 /**
- * Plane Radar — WiFi setup, then radar UI on the round GC9A01 display.
+ * Plane Radar — CYD (ESP32-2432S028R).
+ *
+ * Boot: touch calibration (first boot) -> Wi-Fi screen -> radar screen.
+ * From the radar, the gear button (top left) or holding BOOT opens Settings; Settings
+ * can open the Wi-Fi screen, which then returns to Settings.
+ * Everything on the panel is LVGL; the loop task is the only one calling it.
+ * Network work (HTTP) runs on services::network_task.
  */
 
 #include <Arduino.h>
-#include <WiFi.h>
 
 #include "config.h"
+#include "hardware/boot_button.h"
 #include "hardware/display.h"
+#include "hardware/touch.h"
 #include "services/adsb_client.h"
+#include "services/config_store.h"
+#include "services/geocode.h"
+#include "services/network_task.h"
 #include "services/radar_location.h"
-#include "services/wifi_setup.h"
-#include "ui/radar_display.h"
-#include "ui/radar_range.h"
-#include "ui/status_screens.h"
+#include "services/route_lookup.h"
+#include "services/settings.h"
+#include "services/wifi_conn.h"
+#include "ui/lvgl_port.h"
+#include "ui/radar_screen.h"
+#include "ui/settings_screen.h"
+#include "ui/wifi_screen.h"
 
 namespace {
 
-bool g_radar_visible = false;
-unsigned long g_wifi_down_since = 0;
-unsigned long g_last_reconnect_ms = 0;
-unsigned long g_last_redraw_ms = 0;
+/** The Wi-Fi screen was opened from Settings: go back there when it closes. */
+bool s_wifi_from_settings = false;
 
-void showRadarIfConnected() {
-  if (WiFi.status() != WL_CONNECTED) {
-    g_radar_visible = false;
-    return;
-  }
-  ui::radarDisplayDraw();
-  g_radar_visible = true;
-}
-
-void onRangeTap() {
-  ui::radar::rangeNext();
-  char range_label[12];
-  ui::radar::formatCurrentRing3Label(range_label, sizeof(range_label));
-  Serial.printf("Range: %s (outer ~%.0f km)\n", range_label,
-                ui::radar::rangeCurrent().outer_km);
-
-  if (g_radar_visible && WiFi.status() == WL_CONNECTED) {
-    ui::radarDisplayDraw();
-  }
-}
-
-void handleBootButton() {
-  bootButtonPollLongPress();
-  if (bootButtonConsumeTap()) {
-    onRangeTap();
-  }
-}
-
-// ADS-B fetch runs on its own task: the HTTPS request blocks for ~1-2 s, and
-// keeping it off the main loop lets the radar refresh independently. The task
-// publishes into the shared aircraft buffer under a
-// lock; the render loop reads a snapshot.
-void adsbFetchTask(void*) {
-  for (;;) {
-    if (WiFi.status() == WL_CONNECTED) {
-      services::adsb::fetchUpdate(services::location::lat(),
-                                  services::location::lon(),
-                                  ui::radar::fetchRadiusKm());
-    }
-    vTaskDelay(pdMS_TO_TICKS(config::kAdsbFetchIntervalMs));
-  }
+void openSettings() {
+  // A BOOT hold or the gear tap may still be down: don't let it hit a row.
+  ui::lvgl_port::ignoreTouchUntilRelease();
+  ui::settings_screen::open();  // replaces the radar screen
 }
 
 }  // namespace
 
 void setup() {
   Serial.begin(115200);
-  delay(500);
+  delay(300);
   Serial.println();
-  Serial.println("Plane Radar");
+  Serial.println("Plane Radar (CYD)");
 
-  bootButtonInit();
+  hardware::boot_button::init();
   displayInit();
-  if (wifiShowsSetupScreenOnBoot()) {
-    statusScreenPortal();
-  }
+  hardware::touch::init();
+  ui::lvgl_port::init();
+
+  // Settings: NVS first, then the SD card file (if any) overrides it.
+  services::settings::init();
   services::location::init();
-  ui::radar::rangeInit();
+  services::config_store::init();
+  tft.setBrightness(static_cast<uint8_t>(
+      services::settings::brightnessPct() * 255 / 100));
   services::adsb::init();
+  services::route::init();
+  services::geocode::init();
+  services::wifi::init();
 
-  if (wifiSetupConnect()) {
-    showRadarIfConnected();
+  if (services::wifi::hasSaved()) {
+    ui::wifi_screen::openConnecting(/*cancelable=*/false);
+  } else {
+    ui::wifi_screen::openScan(/*cancelable=*/false);
   }
 
-  // Start the background ADS-B fetch (pinned to core 0, away from the render
-  // loop on core 1). It checks Wi-Fi state each cycle.
-  xTaskCreatePinnedToCore(adsbFetchTask, "adsb", 16384, nullptr, 1, nullptr, 0);
+  services::network_task::start();
 }
 
 void loop() {
-  handleBootButton();
-  wifiLoop();
+  services::wifi::loop();
+  const auto button = hardware::boot_button::poll();
 
-  if (WiFi.status() != WL_CONNECTED) {
-    if (g_radar_visible) {
-      Serial.println("WiFi lost — will reconnect");
-      g_radar_visible = false;
-    }
-
-    if (g_wifi_down_since == 0) {
-      g_wifi_down_since = millis();
-    }
-
-    const unsigned long down_ms = millis() - g_wifi_down_since;
-    if (down_ms >= config::kWifiDownGraceMs &&
-        millis() - g_last_reconnect_ms >= config::kWifiReconnectIntervalMs) {
-      g_last_reconnect_ms = millis();
-      if (wifiReconnect()) {
-        g_wifi_down_since = 0;
-        showRadarIfConnected();
+  if (ui::wifi_screen::isOpen()) {
+    ui::wifi_screen::update();
+    if (!ui::wifi_screen::isOpen()) {
+      if (s_wifi_from_settings) {
+        s_wifi_from_settings = false;
+        ui::settings_screen::open();
+      } else {
+        ui::radar_screen::open();
       }
     }
-  } else {
-    g_wifi_down_since = 0;
-    if (!g_radar_visible) {
-      showRadarIfConnected();
-    } else if (millis() - g_last_redraw_ms >= config::kRadarRedrawIntervalMs) {
-      // Refresh slowly to avoid continuous motion; ADS-B fetch runs on its own
-      // task (adsbFetchTask).
-      g_last_redraw_ms = millis();
-      ui::radarDisplayRefreshAircraft();
+  } else if (ui::settings_screen::isOpen()) {
+    ui::settings_screen::update();
+    switch (ui::settings_screen::takeExit()) {
+      case ui::settings_screen::Exit::Radar:
+        ui::radar_screen::open();
+        break;
+      case ui::settings_screen::Exit::Wifi:
+        s_wifi_from_settings = true;
+        ui::wifi_screen::openScan(/*cancelable=*/true);
+        break;
+      case ui::settings_screen::Exit::None:
+      default:
+        break;
     }
+  } else if (button == hardware::boot_button::Event::Hold ||
+             ui::radar_screen::takeSettingsRequest()) {
+    openSettings();
+  } else if (button == hardware::boot_button::Event::Tap) {
+    ui::radar_screen::nextRange();
   }
 
-  delay(10);
+  ui::lvgl_port::handle();
+  delay(5);
 }
